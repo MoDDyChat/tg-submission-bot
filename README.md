@@ -133,6 +133,14 @@ cp config/rules.example.txt config/rules.txt
 
 If the file is missing, the built-in text from `src/core/messages.py` is used.
 
+### All other bot texts
+
+Every other user-facing string (buttons, prompts, notifications) lives in `config/messages.yaml`
+(path configurable via `MESSAGES_PATH`). Edit any value — the file is validated at startup: if an
+edit drops or renames a `{placeholder}` the message actually needs, the bot refuses to start with
+a clear error instead of crashing mid-conversation. Keys with no file entry fall back to the
+built-in defaults in `src/core/messages.py`.
+
 ---
 
 ## Step 3. Running
@@ -245,7 +253,7 @@ Telegram `file_id` is stored, so `pg_dump` is enough.
 | Rules text for viewers (`/start`) | the file at `RULES_PATH`, e.g. `config/rules.txt` |
 | Topic status names and icons | `config/topic_statuses.json` |
 | Tag presets | right inside the bot: `/start` → "Management" → "Tag presets" |
-| All other bot texts | `src/core/messages.py` |
+| All other bot texts | `config/messages.yaml`, path configurable via `MESSAGES_PATH` |
 
 ---
 

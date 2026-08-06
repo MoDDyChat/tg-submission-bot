@@ -162,14 +162,14 @@ def _build_wizard_view(
 
     if page_index < len(sections):
         section = sections[page_index]
-        text = _build_preview_text(
-            tags,
-            caption,
-            msg.TAGS_WIZARD_SECTION.format(section=html.escape(section.label)),
-        )
+        section_presets = grouped.get(section.key, [])
+        prompt = msg.TAGS_WIZARD_SECTION.format(section=html.escape(section.label))
+        if not section_presets:
+            prompt += msg.TAGS_WIZARD_SECTION_EMPTY_HINT
+        text = _build_preview_text(tags, caption, prompt)
         keyboard = tags_preset_page_kb(
             section,
-            grouped.get(section.key, []),
+            section_presets,
             set(selected_by_section.get(section.key, [])),
             can_go_back=page_index > 0,
             has_next=True,

@@ -47,3 +47,12 @@ class PublishStateUnknownError(MSBotError):
         )
 
 
+# ── Config ─────────────────────────────────────────────────────────
+
+class MessagesConfigError(MSBotError):
+    """Raised at startup when config/messages.yaml is malformed or drifts
+    from the expected shape (unknown key, wrong type, mismatched placeholders).
+    Fails loud at load time so a bad edit never surfaces as a runtime
+    ``KeyError`` inside a handler's ``.format()`` call."""
+
+

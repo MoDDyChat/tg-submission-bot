@@ -54,6 +54,9 @@ class Config(BaseSettings):
     proxy_url: str | None = None
     # Путь к JSON-файлу конфигурации статусов тем (лейблы + иконки)
     topic_statuses_path: str = "config/topic_statuses.json"
+    # Путь к YAML-файлу с текстами бота (переопределяет core.messages._DEFAULTS).
+    # При отсутствии файла или отдельных ключей используются встроенные значения.
+    messages_path: str = "config/messages.yaml"
     # Путь к текстовому файлу с правилами предложки (текст /start для вьюеров).
     # У каждого инстанса свой файл (задаётся через RULES_PATH в .env). HTML.
     # При отсутствии файла используется встроенный текст core.messages.RULES.
