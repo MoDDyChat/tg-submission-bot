@@ -1,0 +1,21 @@
+# Normalize line endings to LF on commit for all text files.
+# Prevents spurious whole-file diffs when editing on Windows / WSL (/mnt/g).
+* text=auto eol=lf
+
+# Explicitly LF for source and config
+*.py   text eol=lf
+*.md   text eol=lf
+*.txt  text eol=lf
+*.ini  text eol=lf
+*.cfg  text eol=lf
+*.toml text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.sh   text eol=lf
+
+# Binary files — never touch
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary

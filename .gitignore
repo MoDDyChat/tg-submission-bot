@@ -1,0 +1,29 @@
+__pycache__/
+*.pyc
+.coverage
+.env.sm
+.env.ms
+.env
+*.db
+.venv/
+venv/
+.idea/
+.vscode/*
+!.vscode/
+!.vscode/tasks.json
+logs/
+# Локальная AI-обвязка разработчика — в публичный репозиторий не входит
+.claude/
+.claudeignore
+.ai
+.serena
+memory/
+AGENTS.md
+CLAUDE.md
+
+# Локальная конфигурация деплоя (свои инстансы, пути, сети)
+docker-compose.override.yml
+
+# Тексты правил конкретного канала; в git только config/rules.example.txt
+config/*_rules.txt
+config/rules.txt
