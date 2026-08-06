@@ -1,0 +1,64 @@
+services:
+  bot:
+    container_name: submission_bot
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    networks:
+      - bot_net
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - bot_logs:/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5400/api/v1/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  redis:
+    image: redis:7-alpine
+    container_name: submission_bot_redis
+    restart: unless-stopped
+    networks:
+      - bot_net
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL для бота. Если у вас уже есть свой сервер БД — пропишите его
+  # в DB__HOST / DB__PORT в .env и запускайте только бота:
+  #   docker compose up -d bot redis
+  postgres:
+    image: postgres:16-alpine
+    container_name: submission_bot_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB__NAME:-tg_submission_bot}
+      POSTGRES_USER: ${DB__USER:-postgres}
+      POSTGRES_PASSWORD: ${DB__PASSWORD:-}
+    networks:
+      - bot_net
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB__USER:-postgres} -d ${DB__NAME:-tg_submission_bot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  bot_net:
+
+volumes:
+  bot_logs:
+  redis_data:
+  postgres_data:
