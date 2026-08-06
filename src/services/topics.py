@@ -274,50 +274,67 @@ async def ensure_user_topic(bot: Bot, session: AsyncSession, user: User) -> int:
     return topic_id
 
 
-_TITLE_EDIT_MAX_ATTEMPTS = 3
 _TITLE_EDIT_MIN_INTERVAL = 10
 
+# Монотонный дедлайн: до него воркер не делает новых вызовов editForumTopic.
+# Переждать флуд-контроль через asyncio.sleep внутри тика нельзя: тик длиной в
+# retry_after (у editForumTopic это легко минуты) блокирует следующие запуски
+# джобы (max_instances=1), и APScheduler на каждом интервале пишет
+# "maximum number of running instances reached". Поэтому транзиентная ошибка не
+# усыпляет тик, а сдвигает дедлайн — следующий тик просто выходит сразу.
+_title_edit_backoff_until: float = 0.0
 
-async def _edit_forum_topic_with_retry(
+
+def _title_edit_backoff_remaining() -> float:
+    """Seconds left before the next ``editForumTopic`` call is allowed."""
+    return max(0.0, _title_edit_backoff_until - asyncio.get_running_loop().time())
+
+
+def _defer_title_edits(seconds: float) -> None:
+    """Block title edits for ``seconds`` without holding the scheduler tick."""
+    global _title_edit_backoff_until
+    _title_edit_backoff_until = asyncio.get_running_loop().time() + seconds
+
+
+async def _edit_forum_topic_once(
     bot: Bot, topic_id: int, name: str, icon_kwargs: dict
-) -> None:
-    """Call ``edit_forum_topic``, retrying transient flood/network errors.
+) -> bool:
+    """Send one ``edit_forum_topic`` call, never sleeping inside the tick.
 
-    Raises the last exception if all attempts fail. Non-transient errors
-    (e.g. ``TelegramBadRequest``) propagate immediately.
+    Returns ``True`` when Telegram is in the desired state, ``False`` when the
+    attempt hit a transient flood/network error and was deferred (the revision
+    stays pending and a later tick retries it). Non-transient errors
+    (e.g. ``TelegramBadRequest``) propagate.
     """
-    for attempt in range(1, _TITLE_EDIT_MAX_ATTEMPTS + 1):
-        try:
-            await bot.edit_forum_topic(
-                chat_id=config.moderator_group_id,
-                message_thread_id=topic_id,
-                name=name,
-                **icon_kwargs,
-            )
-            return
-        except TelegramRetryAfter as exc:
-            if attempt == _TITLE_EDIT_MAX_ATTEMPTS:
-                raise
-            wait_seconds = max(exc.retry_after, _TITLE_EDIT_MIN_INTERVAL)
-            logger.info(
-                "Флуд-контроль при обновлении заголовка темы %d, retry через %dс (попытка %d/%d)",
-                topic_id, wait_seconds, attempt, _TITLE_EDIT_MAX_ATTEMPTS,
-            )
-            await asyncio.sleep(wait_seconds)
-        except TelegramNetworkError as exc:
-            if attempt == _TITLE_EDIT_MAX_ATTEMPTS:
-                raise
-            logger.info(
-                "Сетевая ошибка при обновлении заголовка темы %d: %s, retry через 10с (попытка %d/%d)",
-                topic_id, exc, attempt, _TITLE_EDIT_MAX_ATTEMPTS,
-            )
-            await asyncio.sleep(_TITLE_EDIT_MIN_INTERVAL)
-        except TelegramBadRequest as exc:
-            if "TOPIC_NOT_MODIFIED" in str(exc):
-                # Название/иконка уже соответствуют цели — Telegram и так в нужном
-                # состоянии, считаем успехом, чтобы вызывающий синхронизировал БД.
-                return
-            raise
+    try:
+        await bot.edit_forum_topic(
+            chat_id=config.moderator_group_id,
+            message_thread_id=topic_id,
+            name=name,
+            **icon_kwargs,
+        )
+        return True
+    except TelegramRetryAfter as exc:
+        wait_seconds = max(exc.retry_after, _TITLE_EDIT_MIN_INTERVAL)
+        _defer_title_edits(wait_seconds)
+        logger.info(
+            "Флуд-контроль при обновлении заголовка темы %d, следующая попытка через %dс",
+            topic_id, wait_seconds,
+        )
+        return False
+    except TelegramNetworkError as exc:
+        _defer_title_edits(_TITLE_EDIT_MIN_INTERVAL)
+        logger.info(
+            "Сетевая ошибка при обновлении заголовка темы %d: %s, следующая попытка через %dс",
+            topic_id, exc, _TITLE_EDIT_MIN_INTERVAL,
+        )
+        return False
+    except TelegramBadRequest as exc:
+        if "TOPIC_NOT_MODIFIED" in str(exc):
+            # Название/иконка уже соответствуют цели — Telegram и так в нужном
+            # состоянии, считаем успехом, чтобы вызывающий синхронизировал БД.
+            return True
+        raise
 
 
 async def request_topic_title_sync(session: AsyncSession, user_id: int) -> None:
@@ -407,18 +424,35 @@ async def process_next_topic_title_sync(
     and a newer revision queued mid-flight is left for the next pass because
     ``mark_topic_title_sync_applied`` only advances to the captured version.
 
+    A tick never waits: if the previous one is still running or a transient
+    error deferred the next call, it returns immediately instead of piling up
+    behind ``max_instances=1``.
+
     Returns ``True`` when a Telegram edit was applied, otherwise ``False``.
     """
+    if _topic_title_sync_lock.locked():
+        return False
+
     async with _topic_title_sync_lock:
+        remaining = _title_edit_backoff_remaining()
+        if remaining > 0:
+            logger.debug(
+                "Синхронизация заголовков тем отложена ещё на %.0fс", remaining
+            )
+            return False
+
         claimed = await _claim_next_title_revision(session_factory)
         if claimed is None:
             return False
 
         try:
-            await _edit_forum_topic_with_retry(
+            applied = await _edit_forum_topic_once(
                 bot, claimed.topic_id, claimed.title, claimed.icon_kwargs
             )
         except Exception:
+            # Ревизия остаётся pending; дедлайн не даёт долбить Telegram
+            # ошибочным запросом чаще раза в _TITLE_EDIT_MIN_INTERVAL.
+            _defer_title_edits(_TITLE_EDIT_MIN_INTERVAL)
             logger.warning(
                 "Не удалось применить revision=%d заголовка темы %d "
                 "для пользователя %d",
@@ -427,6 +461,9 @@ async def process_next_topic_title_sync(
                 claimed.user_id,
                 exc_info=True,
             )
+            return False
+
+        if not applied:
             return False
 
         async with session_factory() as session:

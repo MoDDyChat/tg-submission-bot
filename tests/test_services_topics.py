@@ -778,10 +778,18 @@ async def test_probe_submission_card_raises_retry_after() -> None:
         await topics.probe_submission_card(bot, session, sub)
 
 
-# ── _edit_forum_topic_with_retry — TOPIC_NOT_MODIFIED ───────────────
+# ── _edit_forum_topic_once — TOPIC_NOT_MODIFIED / backoff ───────────
 
-async def test_edit_forum_topic_with_retry_topic_not_modified_is_success() -> None:
-    """TelegramBadRequest with TOPIC_NOT_MODIFIED returns without raising."""
+@pytest.fixture(autouse=True)
+def _reset_title_edit_backoff():
+    """Keep the module-level title-edit deadline from leaking across tests."""
+    topics._title_edit_backoff_until = 0.0
+    yield
+    topics._title_edit_backoff_until = 0.0
+
+
+async def test_edit_forum_topic_once_topic_not_modified_is_success() -> None:
+    """TelegramBadRequest with TOPIC_NOT_MODIFIED counts as applied."""
     from aiogram.exceptions import TelegramBadRequest
 
     bot = make_bot()
@@ -789,13 +797,12 @@ async def test_edit_forum_topic_with_retry_topic_not_modified_is_success() -> No
         method=MagicMock(), message="Bad Request: TOPIC_NOT_MODIFIED"
     )
 
-    # Should not raise
-    await topics._edit_forum_topic_with_retry(
+    assert await topics._edit_forum_topic_once(
         bot, topic_id=10, name="[New Title]", icon_kwargs={}
-    )
+    ) is True
 
 
-async def test_edit_forum_topic_with_retry_other_bad_request_raises() -> None:
+async def test_edit_forum_topic_once_other_bad_request_raises() -> None:
     """TelegramBadRequest without TOPIC_NOT_MODIFIED is re-raised."""
     from aiogram.exceptions import TelegramBadRequest
 
@@ -805,9 +812,29 @@ async def test_edit_forum_topic_with_retry_other_bad_request_raises() -> None:
     )
 
     with pytest.raises(TelegramBadRequest):
-        await topics._edit_forum_topic_with_retry(
+        await topics._edit_forum_topic_once(
             bot, topic_id=10, name="[New Title]", icon_kwargs={}
         )
+
+
+async def test_edit_forum_topic_once_flood_defers_without_sleeping() -> None:
+    """Flood control must set a deadline, not sleep inside the tick."""
+    from aiogram.exceptions import TelegramRetryAfter
+
+    bot = make_bot()
+    bot.edit_forum_topic.side_effect = TelegramRetryAfter(
+        method=MagicMock(), message="Too Many Requests", retry_after=300
+    )
+    sleep_mock = AsyncMock()
+
+    with patch.object(topics.asyncio, "sleep", sleep_mock):
+        applied = await topics._edit_forum_topic_once(
+            bot, topic_id=10, name="[New Title]", icon_kwargs={}
+        )
+
+    assert applied is False
+    sleep_mock.assert_not_awaited()
+    assert topics._title_edit_backoff_remaining() > 290
 
 
 # ── durable topic-title sync worker ────────────────────────────────
@@ -970,6 +997,22 @@ async def test_process_next_topic_title_sync_keeps_failed_revision_pending() -> 
 
     assert result is False
     mark_applied.assert_not_awaited()
+    # Ошибка сдвигает дедлайн, чтобы следующий тик не долбил Telegram сразу
+    assert topics._title_edit_backoff_remaining() > 0
+
+
+async def test_process_next_topic_title_sync_skips_tick_while_deferred() -> None:
+    """While the deadline holds, a tick returns at once and claims nothing."""
+    bot = make_bot()
+    session = AsyncMock()
+    factory = FakeSessionFactory(session)
+    topics._defer_title_edits(300)
+
+    result = await topics.process_next_topic_title_sync(bot, factory)
+
+    assert result is False
+    session.execute.assert_not_awaited()
+    bot.edit_forum_topic.assert_not_awaited()
 
 
 async def test_reconcile_topic_titles_only_queues_detectable_drift() -> None:
