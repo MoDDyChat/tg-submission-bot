@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import core.messages as msg
@@ -76,6 +77,9 @@ async def test_handle_reject_reason_rejects_submission(monkeypatch) -> None:
     monkeypatch.setattr(reject.topics, "request_topic_title_sync", AsyncMock())
     monkeypatch.setattr(reject.edit_lock, "release_lock", AsyncMock())
     monkeypatch.setattr(reject, "_render_queue", AsyncMock())
+    monkeypatch.setattr(reject, "_render_schedule", AsyncMock())
+    monkeypatch.setattr(reject, "_drop_pending_publication", AsyncMock(return_value=None))
+    monkeypatch.setattr(reject, "cancel_scheduled", lambda pub_id: None)
     monkeypatch.setattr(reject, "_delete_tracked_messages", AsyncMock())
 
     await reject.handle_reject_reason(message, session, state, db_user)
@@ -101,6 +105,9 @@ async def test_handle_reject_reason_skips_dm_when_moderator_is_author(monkeypatc
     monkeypatch.setattr(reject.topics, "request_topic_title_sync", AsyncMock())
     monkeypatch.setattr(reject.edit_lock, "release_lock", AsyncMock())
     monkeypatch.setattr(reject, "_render_queue", AsyncMock())
+    monkeypatch.setattr(reject, "_render_schedule", AsyncMock())
+    monkeypatch.setattr(reject, "_drop_pending_publication", AsyncMock(return_value=None))
+    monkeypatch.setattr(reject, "cancel_scheduled", lambda pub_id: None)
     monkeypatch.setattr(reject, "_delete_tracked_messages", AsyncMock())
 
     await reject.handle_reject_reason(message, session, state, db_user)
@@ -144,6 +151,9 @@ async def test_handle_reject_silent_rejects_without_notification(monkeypatch) ->
     monkeypatch.setattr(reject.topics, "request_topic_title_sync", AsyncMock())
     monkeypatch.setattr(reject.edit_lock, "release_lock", AsyncMock())
     monkeypatch.setattr(reject, "_render_queue", AsyncMock())
+    monkeypatch.setattr(reject, "_render_schedule", AsyncMock())
+    monkeypatch.setattr(reject, "_drop_pending_publication", AsyncMock(return_value=None))
+    monkeypatch.setattr(reject, "cancel_scheduled", lambda pub_id: None)
     monkeypatch.setattr(reject, "_delete_tracked_messages", AsyncMock())
 
     await reject.handle_reject_silent(callback, AsyncMock(sub_id=7), session, state, db_user)
@@ -153,3 +163,98 @@ async def test_handle_reject_silent_rejects_without_notification(monkeypatch) ->
     notify_rejected.assert_awaited_once()
     assert notify_rejected.await_args.kwargs.get("silent") is True
     assert state.cleared is True
+
+
+# ── scheduled posts: publication must be dropped ─────────────────────
+
+async def test_handle_reject_silent_drops_publication_of_scheduled_post(monkeypatch) -> None:
+    session = AsyncMock()
+    state = FakeState({"sub_id": 7})
+    db_user = make_user()
+    sub = make_submission(sub_id=7, status="scheduled")
+    callback = make_callback()
+    drop = AsyncMock(return_value=42)
+    cancelled: list[int] = []
+    render_schedule = AsyncMock()
+
+    monkeypatch.setattr(reject, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(reject.edit_lock, "extend_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(reject, "update_submission_status", AsyncMock())
+    monkeypatch.setattr(reject.topic_notifications, "notify_rejected", AsyncMock())
+    monkeypatch.setattr(reject.topics, "finalize_submission_card", AsyncMock())
+    monkeypatch.setattr(reject.topics, "request_topic_title_sync", AsyncMock())
+    monkeypatch.setattr(reject.edit_lock, "release_lock", AsyncMock())
+    monkeypatch.setattr(reject, "_render_queue", AsyncMock())
+    monkeypatch.setattr(reject, "_render_schedule", render_schedule)
+    monkeypatch.setattr(reject, "_drop_pending_publication", drop)
+    monkeypatch.setattr(reject, "cancel_scheduled", cancelled.append)
+    monkeypatch.setattr(reject, "_delete_tracked_messages", AsyncMock())
+
+    await reject.handle_reject_silent(callback, AsyncMock(sub_id=7), session, state, db_user)
+
+    drop.assert_awaited_once_with(session, 7)
+    assert cancelled == [42]
+    render_schedule.assert_awaited_once()
+
+
+async def test_handle_reject_reason_drops_publication_of_scheduled_post(monkeypatch) -> None:
+    session = AsyncMock()
+    state = FakeState({"sub_id": 7})
+    db_user = make_user(user_id=2, telegram_id=202)
+    message = make_message(text="Not this time")
+    sub = make_submission(sub_id=7, status="scheduled")
+    drop = AsyncMock(return_value=42)
+    cancelled: list[int] = []
+    render_schedule = AsyncMock()
+
+    monkeypatch.setattr(reject.edit_lock, "extend_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(reject, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(reject, "update_submission_status", AsyncMock())
+    monkeypatch.setattr(reject.topic_notifications, "notify_rejected", AsyncMock())
+    monkeypatch.setattr(reject.topics, "finalize_submission_card", AsyncMock())
+    monkeypatch.setattr(reject.topics, "request_topic_title_sync", AsyncMock())
+    monkeypatch.setattr(reject.edit_lock, "release_lock", AsyncMock())
+    monkeypatch.setattr(reject, "_render_queue", AsyncMock())
+    monkeypatch.setattr(reject, "_render_schedule", render_schedule)
+    monkeypatch.setattr(reject, "_drop_pending_publication", drop)
+    monkeypatch.setattr(reject, "cancel_scheduled", cancelled.append)
+    monkeypatch.setattr(reject, "_delete_tracked_messages", AsyncMock())
+
+    await reject.handle_reject_reason(message, session, state, db_user)
+
+    drop.assert_awaited_once_with(session, 7)
+    assert cancelled == [42]
+    render_schedule.assert_awaited_once()
+
+
+# ── _drop_pending_publication ────────────────────────────────────────
+
+async def test_drop_pending_publication_deletes_row_and_returns_id(monkeypatch) -> None:
+    from handlers.moderator import _helpers
+
+    session = AsyncMock()
+    pub = SimpleNamespace(id=42)
+    deleted = AsyncMock()
+
+    monkeypatch.setattr(
+        "db.queries.get_publication_by_submission", AsyncMock(return_value=pub)
+    )
+    monkeypatch.setattr("db.queries.delete_publication", deleted)
+
+    assert await _helpers._drop_pending_publication(session, 7) == 42
+    deleted.assert_awaited_once_with(session, 42)
+
+
+async def test_drop_pending_publication_noop_without_publication(monkeypatch) -> None:
+    from handlers.moderator import _helpers
+
+    session = AsyncMock()
+    deleted = AsyncMock()
+
+    monkeypatch.setattr(
+        "db.queries.get_publication_by_submission", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr("db.queries.delete_publication", deleted)
+
+    assert await _helpers._drop_pending_publication(session, 7) is None
+    deleted.assert_not_awaited()

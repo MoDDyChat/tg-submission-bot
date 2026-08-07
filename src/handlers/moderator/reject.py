@@ -14,11 +14,13 @@ from keyboards.callbacks import SubmissionCB
 from services import edit_lock, topic_notifications, topics
 from services.author_card import request_author_card
 from services.dashboard import request_dashboard
+from services.scheduler import cancel_scheduled
 from services.topics_queue import render_queue as _render_queue
+from services.topics_queue import render_schedule as _render_schedule
 from states.moderator import ModeratorReview
 from utils.html_entities import get_html_text
 
-from ._helpers import TERMINAL_STATUSES, _delete_tracked_messages
+from ._helpers import TERMINAL_STATUSES, _delete_tracked_messages, _drop_pending_publication
 
 logger = get_logger(__name__)
 
@@ -84,8 +86,17 @@ async def handle_reject_reason(
 
     reason_html = get_html_text(message)
 
+    # A scheduled post can be rejected straight from the card — drop its
+    # publication so no orphan job/row survives the terminal transition.
+    dropped_pub_id = await _drop_pending_publication(session, sub_id)
+
     await update_submission_status(session, sub_id, "rejected")
     sub.status = "rejected"
+    await session.commit()
+    # Only now that the delete is durable — cancelling a job cannot be undone.
+    if dropped_pub_id is not None:
+        cancel_scheduled(dropped_pub_id)
+
     await topic_notifications.notify_rejected(message.bot, session, sub, db_user, reason=reason_html, silent=False)
     await topics.finalize_submission_card(message.bot, session, sub)
     await topics.request_topic_title_sync(session, sub.user.id)
@@ -94,6 +105,8 @@ async def handle_reject_reason(
     logger.info("Пост #%d отклонён. Причина: %s", sub_id, message.text)
 
     await _render_queue(message.bot, session)
+    if dropped_pub_id is not None:
+        await _render_schedule(message.bot, session)
     request_dashboard()
     request_author_card(sub.user.id)
 
@@ -147,8 +160,15 @@ async def handle_reject_silent(
         await callback.answer(msg.MODERATOR_LOCK_LOST, show_alert=True)
         return
 
+    dropped_pub_id = await _drop_pending_publication(session, sub_id)
+
     await update_submission_status(session, sub_id, "rejected")
     sub.status = "rejected"
+    await session.commit()
+    # Only now that the delete is durable — cancelling a job cannot be undone.
+    if dropped_pub_id is not None:
+        cancel_scheduled(dropped_pub_id)
+
     await topic_notifications.notify_rejected(callback.bot, session, sub, db_user, reason=None, silent=True)
     await topics.finalize_submission_card(callback.bot, session, sub)
     await topics.request_topic_title_sync(session, sub.user.id)
@@ -157,6 +177,8 @@ async def handle_reject_silent(
     logger.info("Пост #%d тихо отклонён.", sub_id)
 
     await _render_queue(callback.bot, session)
+    if dropped_pub_id is not None:
+        await _render_schedule(callback.bot, session)
     request_dashboard()
     request_author_card(sub.user.id)
 

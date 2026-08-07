@@ -48,6 +48,32 @@ from .view import render_submission_view  # noqa: E402
 _send_submission_view = render_submission_view
 
 
+async def _drop_pending_publication(session: AsyncSession, sub_id: int) -> int | None:
+    """Delete the publication row of *sub_id*; return its id, or None if there was none.
+
+    Used when a submission leaves the ``scheduled`` status through a terminal
+    transition (reject) instead of the regular unschedule flow — otherwise the
+    publication row survives with ``published_at IS NULL`` and keeps showing up
+    in the schedule post, gets its job recreated on every restart and is
+    eventually marked dead.
+
+    Only the DB side happens here.  Cancelling the APScheduler job cannot be
+    rolled back, so the caller must do it via ``cancel_scheduled`` *after* the
+    commit succeeds: a crash in that window merely leaves a job that fires into
+    a missing publication (logged and skipped), whereas cancelling first would
+    leave a still-``scheduled`` post with no job at all.
+    """
+    from db.queries import delete_publication, get_publication_by_submission
+
+    pub = await get_publication_by_submission(session, sub_id)
+    if pub is None:
+        return None
+
+    pub_id = pub.id
+    await delete_publication(session, pub_id)
+    return pub_id
+
+
 async def _extend_submission_lock_from_state(
     session: AsyncSession,
     state: FSMContext,
