@@ -26,6 +26,7 @@ from keyboards.moderator import confirm_schedule_kb, submission_actions_kb
 from services import edit_lock, topic_notifications, topics
 from services.author_card import request_author_card
 from services.dashboard import request_dashboard
+from services.schedule_occupancy import DayOccupancy, get_day_occupancy, get_month_occupancy
 from services.scheduler import cancel_scheduled, schedule_post
 from services.topics_queue import render_queue as _render_queue
 from services.topics_queue import render_schedule as _render_schedule
@@ -38,6 +39,32 @@ from ._helpers import TERMINAL_STATUSES, _extend_submission_lock_from_state
 logger = get_logger(__name__)
 
 router = Router()
+
+
+async def _month_busy(session: AsyncSession, year: int, month: int, state: FSMContext) -> dict[int, int]:
+    data = await state.get_data()
+    return await get_month_occupancy(
+        session, year, month, ZoneInfo(config.timezone),
+        exclude_submission_id=data.get("sub_id"),
+    )
+
+
+_BUSY_LIST_CAP = 20
+
+
+def _busy_text(base: str, occupancy: DayOccupancy) -> str:
+    if not occupancy.entries:
+        return base
+    entries = occupancy.entries[:_BUSY_LIST_CAP]
+    lines = [msg.PICK_BUSY_HEADER] + [
+        msg.PICK_BUSY_LINE.format(time=dt.strftime("%H:%M"), sub_id=sub_id)
+        for dt, sub_id in entries
+    ]
+    if len(occupancy.entries) > _BUSY_LIST_CAP:
+        lines.append("…")
+    # Блок занятости вставляется между строкой даты и "Выберите час/минуты:"
+    first, _, rest = base.partition("\n")
+    return f"{first}\n{'\n'.join(lines)}\n{rest}"
 
 
 @router.callback_query(SubmissionCB.filter(F.action == "schedule"))
@@ -69,9 +96,10 @@ async def handle_schedule_start(
     await state.set_state(ModeratorReview.picking_date)
     await state.update_data(sub_id=callback_data.sub_id)
 
+    busy_days = await _month_busy(session, now.year, now.month, state)
     schedule_msg = await callback.message.answer(
         msg.PICK_DATE,
-        reply_markup=calendar_kb(now.year, now.month, tz),
+        reply_markup=calendar_kb(now.year, now.month, tz, busy_days=busy_days),
     )
     await state.update_data(schedule_message_id=schedule_msg.message_id)
     await callback.answer()
@@ -96,9 +124,15 @@ async def handle_calendar_day(
     )
     await state.set_state(ModeratorReview.picking_hour)
     date_str = f"{callback_data.day:02d}.{callback_data.month:02d}.{callback_data.year}"
+    data = await state.get_data()
+    tz = ZoneInfo(config.timezone)
+    occ = await get_day_occupancy(
+        session, callback_data.year, callback_data.month, callback_data.day, tz,
+        exclude_submission_id=data.get("sub_id"),
+    )
     await callback.message.edit_text(
-        msg.PICK_HOUR.format(date=date_str),
-        reply_markup=hours_kb(callback_data.year, callback_data.month, callback_data.day, ZoneInfo(config.timezone)),
+        _busy_text(msg.PICK_HOUR.format(date=date_str), occ),
+        reply_markup=hours_kb(callback_data.year, callback_data.month, callback_data.day, tz, busy_hours=occ.hours),
     )
     await callback.answer()
 
@@ -120,7 +154,10 @@ async def handle_calendar_prev(
     if month < 1:
         month = 12
         year -= 1
-    await callback.message.edit_reply_markup(reply_markup=calendar_kb(year, month, ZoneInfo(config.timezone)))
+    busy_days = await _month_busy(session, year, month, state)
+    await callback.message.edit_reply_markup(
+        reply_markup=calendar_kb(year, month, ZoneInfo(config.timezone), busy_days=busy_days)
+    )
     await callback.answer()
 
 
@@ -141,7 +178,10 @@ async def handle_calendar_next(
     if month > 12:
         month = 1
         year += 1
-    await callback.message.edit_reply_markup(reply_markup=calendar_kb(year, month, ZoneInfo(config.timezone)))
+    busy_days = await _month_busy(session, year, month, state)
+    await callback.message.edit_reply_markup(
+        reply_markup=calendar_kb(year, month, ZoneInfo(config.timezone), busy_days=busy_days)
+    )
     await callback.answer()
 
 
@@ -163,9 +203,10 @@ async def handle_hours_back_to_calendar(
         await callback.answer(msg.MODERATOR_LOCK_LOST, show_alert=True)
         return
     await state.set_state(ModeratorReview.picking_date)
+    busy_days = await _month_busy(session, callback_data.year, callback_data.month, state)
     await callback.message.edit_text(
         msg.PICK_DATE,
-        reply_markup=calendar_kb(callback_data.year, callback_data.month, ZoneInfo(config.timezone)),
+        reply_markup=calendar_kb(callback_data.year, callback_data.month, ZoneInfo(config.timezone), busy_days=busy_days),
     )
     await callback.answer()
 
@@ -184,9 +225,15 @@ async def handle_minutes_back_to_hours(
         return
     date_str = f"{callback_data.day:02d}.{callback_data.month:02d}.{callback_data.year}"
     await state.set_state(ModeratorReview.picking_hour)
+    data = await state.get_data()
+    tz = ZoneInfo(config.timezone)
+    occ = await get_day_occupancy(
+        session, callback_data.year, callback_data.month, callback_data.day, tz,
+        exclude_submission_id=data.get("sub_id"),
+    )
     await callback.message.edit_text(
-        msg.PICK_HOUR.format(date=date_str),
-        reply_markup=hours_kb(callback_data.year, callback_data.month, callback_data.day, ZoneInfo(config.timezone)),
+        _busy_text(msg.PICK_HOUR.format(date=date_str), occ),
+        reply_markup=hours_kb(callback_data.year, callback_data.month, callback_data.day, tz, busy_hours=occ.hours),
     )
     await callback.answer()
 
@@ -208,9 +255,18 @@ async def handle_pick_hour(
 
     data = await state.get_data()
     date_str = f"{data['pub_day']:02d}.{data['pub_month']:02d}.{data['pub_year']}"
+    tz = ZoneInfo(config.timezone)
+    occ = await get_day_occupancy(
+        session, data["pub_year"], data["pub_month"], data["pub_day"], tz,
+        exclude_submission_id=data.get("sub_id"),
+    )
+    busy_minutes = {m for h, m in occ.minute_slots if h == callback_data.hour}
     await callback.message.edit_text(
-        msg.PICK_MINUTE.format(date=date_str),
-        reply_markup=minutes_kb(callback_data.hour, data["pub_year"], data["pub_month"], data["pub_day"], ZoneInfo(config.timezone)),
+        _busy_text(msg.PICK_MINUTE.format(date=date_str), occ),
+        reply_markup=minutes_kb(
+            callback_data.hour, data["pub_year"], data["pub_month"], data["pub_day"], tz,
+            busy_minutes=busy_minutes,
+        ),
     )
     await callback.answer()
 
@@ -281,9 +337,17 @@ async def handle_confirm_yes(
         await callback.answer(msg.SCHEDULE_TIME_PAST, show_alert=True)
         await state.set_state(ModeratorReview.picking_minute)
         date_str = f"{data['pub_day']:02d}.{data['pub_month']:02d}.{data['pub_year']}"
+        occ = await get_day_occupancy(
+            session, data["pub_year"], data["pub_month"], data["pub_day"], tz,
+            exclude_submission_id=sub_id,
+        )
+        busy_minutes = {m for h, m in occ.minute_slots if h == data["pub_hour"]}
         await callback.message.edit_text(
-            msg.PICK_MINUTE.format(date=date_str),
-            reply_markup=minutes_kb(data["pub_hour"], data["pub_year"], data["pub_month"], data["pub_day"], tz),
+            _busy_text(msg.PICK_MINUTE.format(date=date_str), occ),
+            reply_markup=minutes_kb(
+                data["pub_hour"], data["pub_year"], data["pub_month"], data["pub_day"], tz,
+                busy_minutes=busy_minutes,
+            ),
         )
         return
 
@@ -397,15 +461,21 @@ async def handle_confirm_back(
         await state.set_state(ModeratorReview.picking_date)
         _tz = ZoneInfo(config.timezone)
         now = datetime.now(_tz)
+        busy_days = await _month_busy(session, now.year, now.month, state)
         await callback.message.edit_text(
-            msg.PICK_DATE, reply_markup=calendar_kb(now.year, now.month, _tz)
+            msg.PICK_DATE, reply_markup=calendar_kb(now.year, now.month, _tz, busy_days=busy_days)
         )
     else:
         await state.set_state(ModeratorReview.picking_minute)
         date_str = f"{day:02d}.{month:02d}.{year}"
+        tz = ZoneInfo(config.timezone)
+        occ = await get_day_occupancy(
+            session, year, month, day, tz, exclude_submission_id=data.get("sub_id"),
+        )
+        busy_minutes = {m for h, m in occ.minute_slots if h == hour}
         await callback.message.edit_text(
-            msg.PICK_MINUTE.format(date=date_str),
-            reply_markup=minutes_kb(hour, year, month, day, ZoneInfo(config.timezone)),
+            _busy_text(msg.PICK_MINUTE.format(date=date_str), occ),
+            reply_markup=minutes_kb(hour, year, month, day, tz, busy_minutes=busy_minutes),
         )
     await callback.answer()
 

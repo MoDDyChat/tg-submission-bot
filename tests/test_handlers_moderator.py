@@ -86,7 +86,7 @@ async def test_cmd_start_review_keeps_pending_status_and_syncs_title(monkeypatch
     send_view.assert_awaited_once()
 
 
-async def test_schedule_confirm_yes_rejects_past_time_and_returns_to_minutes() -> None:
+async def test_schedule_confirm_yes_rejects_past_time_and_returns_to_minutes(monkeypatch) -> None:
     state = FakeState(
         {
             "sub_id": 7,
@@ -99,6 +99,9 @@ async def test_schedule_confirm_yes_rejects_past_time_and_returns_to_minutes() -
     )
     callback = make_callback(message=make_message())
     db_user = make_user()
+    monkeypatch.setattr(
+        schedule, "get_day_occupancy", AsyncMock(return_value=schedule.DayOccupancy())
+    )
 
     await schedule.handle_confirm_yes(callback, AsyncMock(), state, db_user)
 

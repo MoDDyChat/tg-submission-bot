@@ -100,6 +100,8 @@ _DEFAULTS: dict[str, str | dict[str, str]] = {
     'PICK_DATE': 'Выберите дату публикации:',
     'PICK_HOUR': 'Дата: {date}\nВыберите час:',
     'PICK_MINUTE': 'Дата: {date}\nВыберите минуты:',
+    'PICK_BUSY_HEADER': 'На этот день уже запланировано:',
+    'PICK_BUSY_LINE': '• {time} — #{sub_id}',
     'CONFIRM_SCHEDULE': '<b>Подтверждение публикации поста #{sub_id}</b>\n\n{summary}',
     'SCHEDULED_OK': 'Пост #{sub_id} запланирован на {time}.',
     'UNSCHEDULED_OK': 'Пост #{sub_id} снят с расписания.',

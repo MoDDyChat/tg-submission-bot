@@ -23,6 +23,7 @@ from db.queries import (
     get_or_create_user,
     get_publication,
     get_publication_by_submission,
+    get_scheduled_times_between,
     get_submission,
     get_submission_media,
     get_submission_with_user,
@@ -373,3 +374,81 @@ async def test_create_direct_message_without_submission(db_session) -> None:
     assert message.target_user_id == viewer.id
     assert message.sender_telegram_id == 999
     assert message.text == "Direct text"
+
+
+@pytest.mark.asyncio
+async def test_get_scheduled_times_between_filters_and_orders(db_session) -> None:
+    user, _ = await get_or_create_user(db_session, 782, "author", "Author")
+    window_start = datetime(2026, 4, 15, tzinfo=timezone.utc)
+    window_end = datetime(2026, 4, 16, tzinfo=timezone.utc)
+
+    in_window_early = await create_submission(db_session, user.id, "Early")
+    in_window_late = await create_submission(db_session, user.id, "Late")
+    at_start_boundary = await create_submission(db_session, user.id, "AtStart")
+    at_end_boundary = await create_submission(db_session, user.id, "AtEnd")
+    already_published = await create_submission(db_session, user.id, "Published")
+    dead = await create_submission(db_session, user.id, "Dead")
+    excluded = await create_submission(db_session, user.id, "Excluded")
+    for sub in (
+        in_window_early,
+        in_window_late,
+        at_start_boundary,
+        at_end_boundary,
+        already_published,
+        dead,
+        excluded,
+    ):
+        await update_submission_status(db_session, sub.id, "scheduled")
+
+    pub_early = await create_publication(
+        db_session, in_window_early.id, None, datetime(2026, 4, 15, 9, 0, tzinfo=timezone.utc)
+    )
+    pub_late = await create_publication(
+        db_session, in_window_late.id, None, datetime(2026, 4, 15, 18, 0, tzinfo=timezone.utc)
+    )
+    pub_at_start = await create_publication(
+        db_session, at_start_boundary.id, None, window_start
+    )
+    pub_at_end = await create_publication(
+        db_session, at_end_boundary.id, None, window_end
+    )
+    pub_published = await create_publication(
+        db_session, already_published.id, None, datetime(2026, 4, 15, 10, 0, tzinfo=timezone.utc)
+    )
+    pub_dead = await create_publication(
+        db_session, dead.id, None, datetime(2026, 4, 15, 11, 0, tzinfo=timezone.utc)
+    )
+    pub_excluded = await create_publication(
+        db_session, excluded.id, None, datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc)
+    )
+    await db_session.commit()
+
+    await mark_published(db_session, pub_published.id)
+    await mark_publication_dead(db_session, pub_dead.id)
+    await db_session.commit()
+
+    result = await get_scheduled_times_between(
+        db_session, window_start, window_end, exclude_submission_id=excluded.id
+    )
+
+    # window is half-open [start, end): the boundary at window_end must be excluded,
+    # the one exactly at window_start must be included; published/dead/excluded are dropped.
+    assert [sub_id for _publish_at, sub_id in result] == [
+        at_start_boundary.id,
+        in_window_early.id,
+        in_window_late.id,
+    ]
+    assert [publish_at for publish_at, _sub_id in result] == [
+        window_start,
+        datetime(2026, 4, 15, 9, 0, tzinfo=timezone.utc),
+        datetime(2026, 4, 15, 18, 0, tzinfo=timezone.utc),
+    ]
+
+    # sanity: publication ids created but unused as objects above are the ones filtered out
+    assert {pub_early.submission_id, pub_late.submission_id, pub_at_start.submission_id} == {
+        in_window_early.id,
+        in_window_late.id,
+        at_start_boundary.id,
+    }
+    assert pub_at_end.submission_id == at_end_boundary.id
+    assert pub_excluded.submission_id == excluded.id

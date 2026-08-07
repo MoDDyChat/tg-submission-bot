@@ -131,3 +131,28 @@ async def delete_publication(session: AsyncSession, pub_id: int) -> None:
     stmt = delete(Publication).where(Publication.id == pub_id)
     await session.execute(stmt)
     await session.flush()
+
+
+async def get_scheduled_times_between(
+    session: AsyncSession,
+    start: datetime,
+    end: datetime,
+    exclude_submission_id: int | None = None,
+) -> list[tuple[datetime, int]]:
+    """Return (publish_at, submission_id) for live scheduled publications in [start, end)."""
+    stmt = (
+        select(Publication.publish_at, Publication.submission_id)
+        .join(Submission, Submission.id == Publication.submission_id)
+        .where(
+            Publication.published_at.is_(None),
+            Publication.dead_at.is_(None),
+            Publication.publish_at >= start,
+            Publication.publish_at < end,
+            Submission.status == "scheduled",
+        )
+        .order_by(Publication.publish_at.asc())
+    )
+    if exclude_submission_id is not None:
+        stmt = stmt.where(Publication.submission_id != exclude_submission_id)
+    result = await session.execute(stmt)
+    return [(row[0], row[1]) for row in result.all()]

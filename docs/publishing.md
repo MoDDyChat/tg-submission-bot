@@ -17,6 +17,26 @@
 
 ---
 
+## Slot occupancy in the schedule wizard
+
+`services/schedule_occupancy.py` shows moderators which time slots are already taken while they're picking a date/hour/minute in the schedule calendar, so they don't have to cross-check the General-topic schedule post separately.
+
+- **Query:** `db/queries/publications.py::get_scheduled_times_between(session, start, end, exclude_submission_id=None)` returns `(publish_at, submission_id)` pairs for the half-open UTC interval `[start, end)`. It only considers **live** scheduled publications — `published_at IS NULL` and `dead_at IS NULL` — so already-published and dead publications (see below) never count as occupancy. The query also joins `submissions` and only counts rows whose `submissions.status == "scheduled"`, mirroring the publisher's own guard (`services/publisher.py:106,151`, which skips any publication whose submission is no longer `scheduled`), so a publication left behind by a submission that moved out of `scheduled` never shows as occupancy. `exclude_submission_id` drops the currently-edited submission's own slot, which matters on reschedule.
+- **`get_month_occupancy(session, year, month, tz, exclude_submission_id=None) -> dict[int, int]`:** builds the local-month boundary (`datetime(year, month, 1, tzinfo=tz)` through the first of the next month, with a December→January rollover), converts both ends to UTC, queries, then buckets each row's `publish_at` back into `tz` and counts posts per day-of-month.
+- **`get_day_occupancy(session, year, month, day, tz, exclude_submission_id=None) -> DayOccupancy`:** same pattern for a single local day (`[00:00, +1 day)`). Returns a `DayOccupancy` with `hours: set[int]`, `minute_slots: set[tuple[int, int]]` (minute floored to the 5-minute picker grid: `minute - minute % 5`), and `entries: list[tuple[datetime, int]]` (local datetime + submission_id, already ordered by `publish_at`).
+- Any `publish_at` that comes back tz-naive from the driver is treated as UTC (`replace(tzinfo=timezone.utc)`) before conversion to local time.
+- The local timezone always comes from `config.timezone` (via `ZoneInfo`), matching how `publish_at` itself is converted on input.
+
+**Keyboard markers (`keyboards/calendar.py`):**
+- `calendar_kb(..., busy_days: dict[int, int] | None = None)` — a day with a positive count gets a negative circled number appended to its button label (`15 ❷`, `20 ⓬`). Button labels are plain text — Telegram parses no markup there — so the emphasis has to come from the glyph itself; `_busy_marker` covers 1–20 (`❶`–`❿` from Dingbats, then `⓫`–`⓴`) and falls back to plain parentheses (`20 (21)`) above that, since Unicode has no circled numbers past 20. The `callback_data` is unchanged.
+- `hours_kb(..., busy_hours: set[int] | None = None)` — a busy hour is prefixed with `🔸` (`🔸12`); still clickable.
+- `minutes_kb(..., busy_minutes: set[int] | None = None)` — a busy 5-minute slot is prefixed with `🔸` (`🔸18:30`); still clickable.
+- All three parameters default to `None`/falsy, so calls that don't pass occupancy data render exactly as before.
+
+**Text block on the hour/minute screens (`handlers/moderator/schedule.py`):** `_busy_text(base, occupancy)` inserts a busy-slot list between the date line and the "pick hour/minute" prompt of `msg.PICK_HOUR`/`msg.PICK_MINUTE`. Header is `msg.PICK_BUSY_HEADER`, each entry is `msg.PICK_BUSY_LINE.format(time=..., sub_id=...)`. The list is capped at `_BUSY_LIST_CAP = 20` entries, with a trailing `…` if there are more; an empty `occupancy.entries` skips the block entirely (screen text is unchanged from the plain `PICK_HOUR`/`PICK_MINUTE` format).
+
+---
+
 ## Dead publications
 
 `recover_scheduled_jobs` (called once on every bot startup) is also where an overdue publication gets marked **dead** instead of recovered:
