@@ -346,3 +346,76 @@ async def test_build_schedule_text_format() -> None:
     result_empty = topics_queue._build_schedule_text([])
     assert "<b>Запланированные посты:</b>" in result_empty
     assert "В данный момент ничего не запланировано." in result_empty
+
+
+# ---------------------------------------------------------------------------
+# _build_schedule_lines — dead publications block
+# ---------------------------------------------------------------------------
+
+
+def _make_pub(pub_id: int, sub_id: int, publish_at, *, dead_at=None, user_id: int = 7):
+    sub = MagicMock()
+    sub.id = sub_id
+    sub.user_id = user_id
+    sub.user.full_name = "Автор"
+    sub.topic_media_message_ids = None
+    sub.topic_card_message_id = None
+
+    pub = MagicMock()
+    pub.id = pub_id
+    pub.publish_at = publish_at
+    pub.dead_at = dead_at
+    pub.submission = sub
+    return pub
+
+
+async def test_build_schedule_lines_puts_dead_publication_in_separate_block(monkeypatch) -> None:
+    import datetime as dt
+
+    live_pub = _make_pub(
+        1, 10, dt.datetime(2026, 6, 15, 10, 0, tzinfo=dt.timezone.utc),
+    )
+    dead_pub = _make_pub(
+        2, 20, dt.datetime(2026, 6, 14, 9, 0, tzinfo=dt.timezone.utc),
+        dead_at=dt.datetime(2026, 6, 15, 8, 0, tzinfo=dt.timezone.utc),
+    )
+
+    pubs_result = MagicMock()
+    pubs_result.scalars.return_value.all.return_value = [dead_pub, live_pub]
+    topics_result = []  # no user topics → link is "—"
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[pubs_result, topics_result])
+    monkeypatch.setattr(topics_queue.config, "moderator_group_id", -1001234567890)
+
+    lines = await topics_queue._build_schedule_lines(session)
+    text = "\n".join(lines)
+
+    dead_header_idx = text.index("Не будут опубликованы")
+    live_day_idx = text.index("<b>── ")
+    assert dead_header_idx < live_day_idx
+    assert "#20" in text
+    assert "#10" in text
+    # The dead publication doesn't get a day-block header of its own
+    assert text.count("<b>── ") == 1
+
+
+async def test_build_schedule_lines_no_dead_block_when_none_dead(monkeypatch) -> None:
+    import datetime as dt
+
+    live_pub = _make_pub(
+        1, 10, dt.datetime(2026, 6, 15, 10, 0, tzinfo=dt.timezone.utc),
+    )
+
+    pubs_result = MagicMock()
+    pubs_result.scalars.return_value.all.return_value = [live_pub]
+    topics_result = []
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[pubs_result, topics_result])
+    monkeypatch.setattr(topics_queue.config, "moderator_group_id", -1001234567890)
+
+    lines = await topics_queue._build_schedule_lines(session)
+    text = "\n".join(lines)
+
+    assert "Не будут опубликованы" not in text

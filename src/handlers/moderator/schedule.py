@@ -24,6 +24,8 @@ from keyboards.calendar import calendar_kb, hours_kb, minutes_kb
 from keyboards.callbacks import CalendarCB, ConfirmCB, SubmissionCB, TimeCB
 from keyboards.moderator import confirm_schedule_kb, submission_actions_kb
 from services import edit_lock, topic_notifications, topics
+from services.author_card import request_author_card
+from services.dashboard import request_dashboard
 from services.scheduler import cancel_scheduled, schedule_post
 from services.topics_queue import render_queue as _render_queue
 from services.topics_queue import render_schedule as _render_schedule
@@ -334,6 +336,8 @@ async def handle_confirm_yes(
 
     await _render_queue(callback.bot, session)
     await _render_schedule(callback.bot, session)
+    request_dashboard()
+    request_author_card(sub.user.id)
 
     time_str = publish_at_local.strftime("%d.%m.%Y %H:%M")
     logger.info("Пост #%d запланирован на %s", sub_id, time_str)

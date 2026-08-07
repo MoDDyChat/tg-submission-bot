@@ -47,7 +47,7 @@ async def notify_admins(
     bot: Bot,
     session: AsyncSession,
     *,
-    actor: User,
+    actor: User | None = None,
     action_text: str,
     exclude_actor: bool = True,
     exclude_telegram_ids: set[int] | None = None,
@@ -63,7 +63,9 @@ async def notify_admins(
     Args:
         bot: The Telegram bot instance.
         session: An active async DB session (read-only usage).
-        actor: The moderator who performed the action.
+        actor: The moderator who performed the action. ``None`` when the
+            notification originates from the bot itself (e.g. a startup
+            self-check), in which case no admin is excluded as the actor.
         action_text: Pre-formatted HTML notification text.
         exclude_actor: When ``True`` (default), skip sending to *actor* themselves.
         exclude_telegram_ids: Admins to skip because the caller delivers them a
@@ -73,7 +75,7 @@ async def notify_admins(
     skip_ids = exclude_telegram_ids or set()
     admins = await get_admin_users(session)
     for admin in admins:
-        if exclude_actor and admin.telegram_id == actor.telegram_id:
+        if exclude_actor and actor is not None and admin.telegram_id == actor.telegram_id:
             continue
         if admin.telegram_id in skip_ids:
             continue

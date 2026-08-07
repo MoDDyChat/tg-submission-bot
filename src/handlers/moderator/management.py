@@ -46,6 +46,7 @@ from keyboards.moderator import (
     tag_presets_list_kb,
 )
 from services import admin_notifications, edit_lock, topic_notifications, topics
+from services.author_card import request_author_card
 from states.moderator import ModeratorReview
 from db.session import session_factory
 from utils.formatting import user_mention
@@ -1638,6 +1639,7 @@ async def handle_unban_select(
     target_user = await get_user_by_id(session, callback_data.user_id)
     await unban_user(session, callback_data.user_id)
     logger.info("Пользователь id:%d разбанен", callback_data.user_id)
+    request_author_card(callback_data.user_id)
     notice = msg.USER_UNBANNED.format(user=html.escape(f"id:{callback_data.user_id}"))
 
     if target_user is not None:

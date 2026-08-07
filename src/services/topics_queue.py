@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+import core.messages as msg
 from core.config import config
 from core.logging import get_logger
 from core.topic_status_config import get_style
@@ -292,7 +293,10 @@ async def _build_schedule_lines(session: AsyncSession) -> list[str]:
     """Build formatted schedule lines, grouped into day blocks with headers.
 
     Blocks are separated by a blank line; within a block only the time is shown,
-    since the date already lives in the day header.
+    since the date already lives in the day header. Dead publications (``dead_at``
+    set — overdue on startup, never scheduled) are pulled out into a separate
+    block at the top instead of a day block, since they carry a date of their own
+    and must not be confused with catching-up jobs that are about to fire.
     """
     tz = ZoneInfo(config.timezone)
     group_id = config.moderator_group_id
@@ -320,23 +324,42 @@ async def _build_schedule_lines(session: AsyncSession) -> list[str]:
         topics_by_user = {row.user_id: row.topic_id for row in topic_result}
 
     today = datetime.now(tz).date()
+    dead_lines: list[str] = []
     lines: list[str] = []
     current_day: date | None = None
     for pub in publications:
         sub = pub.submission
         local_dt = pub.publish_at.astimezone(tz)
+        raw_author = sub.user.full_name if sub.user else f"user:{sub.user_id}"
+        author = html.escape(raw_author)
+        link = _topic_link(chat_short, topics_by_user.get(sub.user_id), sub)
+
+        if pub.dead_at is not None:
+            dead_lines.append(
+                msg.SCHEDULE_DEAD_LINE.format(
+                    date=local_dt.strftime("%d.%m.%Y"),
+                    time=local_dt.strftime("%H:%M"),
+                    author=author,
+                    sub_id=sub.id,
+                    link=link,
+                )
+            )
+            continue
+
         if local_dt.date() != current_day:
             current_day = local_dt.date()
             if lines:
                 lines.append("")
             lines.append(_day_header(current_day, today))
 
-        raw_author = sub.user.full_name if sub.user else f"user:{sub.user_id}"
-        author = html.escape(raw_author)
-        link = _topic_link(chat_short, topics_by_user.get(sub.user_id), sub)
         lines.append(
             f"<b>{local_dt.strftime('%H:%M')}</b> · {author} (#{sub.id}) → {link}"
         )
+
+    if dead_lines:
+        result_lines = [msg.SCHEDULE_DEAD_HEADER, *dead_lines, ""]
+        result_lines.extend(lines)
+        return result_lines
 
     return lines
 

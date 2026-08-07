@@ -35,11 +35,18 @@ class ModeratorReview(StatesGroup):
     submitting_post = State()
 
 
+class AuthorCard(StatesGroup):
+    entering_note = State()
+    entering_ban_reason = State()
+    writing_direct_message = State()
+
+
 # Maps each FSM state string → its cancel-handling category.
-# "management" — release management locks, return home.
-# "viewing"    — full close: release submission lock, clear FSM.
-# "sub"        — sub-state: extend lock, revert to viewing_post.
-STATE_CATEGORY: dict[str, Literal["management", "viewing", "sub"]] = {
+# "management"  — release management locks, return home.
+# "viewing"     — full close: release submission lock, clear FSM.
+# "sub"         — sub-state: extend lock, revert to viewing_post.
+# "author_card" — no edit lock to release; clear FSM and answer cancelled.
+STATE_CATEGORY: dict[str, Literal["management", "viewing", "sub", "author_card"]] = {
     ModeratorReview.management_home.state: "management",
     ModeratorReview.management_menu.state: "management",
     ModeratorReview.management_presets.state: "management",
@@ -68,4 +75,7 @@ STATE_CATEGORY: dict[str, Literal["management", "viewing", "sub"]] = {
     ModeratorReview.confirm_schedule.state: "sub",
     ModeratorReview.confirm_publish_now.state: "sub",
     ContactViewer.writing_message.state: "sub",
+    AuthorCard.entering_note.state: "author_card",
+    AuthorCard.entering_ban_reason.state: "author_card",
+    AuthorCard.writing_direct_message.state: "author_card",
 }

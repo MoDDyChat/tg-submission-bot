@@ -19,6 +19,8 @@ from db.queries import (
 from filters.is_moderator import IsModerator
 from keyboards.callbacks import ViewerCancelCB
 from services import topic_notifications, topics
+from services.author_card import request_author_card
+from services.dashboard import request_dashboard
 from services.submission_intake import (
     _media_group_buffers,
     _media_group_timestamps,
@@ -135,6 +137,8 @@ async def handle_viewer_cancel(
     await topics.finalize_submission_card(callback.bot, session, sub)
     await topics.request_topic_title_sync(session, sub.user.id)
     await _render_queue(callback.bot, session)
+    request_dashboard()
+    request_author_card(db_user.id)
 
     logger.info("%s отменил пост #%d", fmt_user(db_user), sub.id)
 

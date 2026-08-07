@@ -18,6 +18,8 @@ from db.queries import (
 from keyboards.callbacks import SubmissionCB
 from keyboards.moderator import submission_actions_kb
 from services import edit_lock, topic_notifications, topics
+from services.author_card import request_author_card
+from services.dashboard import request_dashboard
 from services.scheduler import cancel_scheduled
 from services.topics_queue import render_queue as _render_queue
 from services.topics_queue import render_schedule as _render_schedule
@@ -73,6 +75,8 @@ async def handle_unschedule(
 
     await _render_queue(callback.bot, session)
     await _render_schedule(callback.bot, session)
+    request_dashboard()
+    request_author_card(sub.user.id)
 
     # Update actions keyboard in-place to show pending-state buttons
     data = await state.get_data()

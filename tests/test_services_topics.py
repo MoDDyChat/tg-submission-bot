@@ -82,11 +82,12 @@ async def test_ensure_user_topic_returns_existing_topic_id() -> None:
 
 # ── ensure_user_topic — new topic ─────────────────────────────────
 
-async def test_ensure_user_topic_creates_new_topic() -> None:
+async def test_ensure_user_topic_creates_new_topic(monkeypatch) -> None:
     """When no UserTopic row exists, create a forum topic and insert the row."""
     bot = make_bot()
     bot.create_forum_topic.return_value = make_forum_topic(77)
     bot.send_message.return_value = make_sent_message(555)
+    monkeypatch.setattr(topics, "create_author_card_message", AsyncMock(return_value=555))
 
     mock_execute_result = MagicMock()
     mock_execute_result.scalar_one_or_none.return_value = 77  # INSERT succeeded
@@ -105,20 +106,40 @@ async def test_ensure_user_topic_creates_new_topic() -> None:
     session.execute.assert_awaited_once()  # INSERT DO NOTHING
 
 
-async def test_ensure_user_topic_posts_welcome_message_on_creation() -> None:
+async def test_ensure_user_topic_opens_with_author_card(monkeypatch) -> None:
+    """A new topic's first message is the author card, not the welcome text."""
+    bot = make_bot()
+    bot.create_forum_topic.return_value = make_forum_topic(88)
+    user = make_user(user_id=6, username="art")
+
+    session = AsyncMock()  # scalar_one_or_none() returns MagicMock (truthy) by default
+    create_card = AsyncMock(return_value=556)
+    monkeypatch.setattr(topics, "create_author_card_message", create_card)
+
+    with patch.object(topics, "get_user_topic", AsyncMock(return_value=None)):
+        await topics.ensure_user_topic(bot, session=session, user=user)
+
+    create_card.assert_awaited_once_with(bot, session, user, 88)
+    bot.send_message.assert_not_awaited()
+
+
+async def test_ensure_user_topic_falls_back_to_welcome_when_card_fails(monkeypatch) -> None:
+    """If the card cannot be posted, the topic still gets an opening message."""
     bot = make_bot()
     bot.create_forum_topic.return_value = make_forum_topic(88)
     bot.send_message.return_value = make_sent_message(556)
     user = make_user(user_id=6, username="art")
 
-    session = AsyncMock()  # scalar_one_or_none() returns MagicMock (truthy) by default
+    session = AsyncMock()
+    monkeypatch.setattr(
+        topics, "create_author_card_message", AsyncMock(side_effect=RuntimeError("boom"))
+    )
 
     with patch.object(topics, "get_user_topic", AsyncMock(return_value=None)):
         await topics.ensure_user_topic(bot, session=session, user=user)
 
     bot.send_message.assert_awaited_once()
-    call_args = bot.send_message.await_args
-    assert call_args.kwargs.get("message_thread_id") == 88
+    assert bot.send_message.await_args.kwargs.get("message_thread_id") == 88
 
 
 # ── request_topic_title_sync ───────────────────────────────────────
@@ -431,36 +452,36 @@ async def test_delete_submission_card_no_ids_is_noop() -> None:
     bot.delete_message.assert_not_awaited()
 
 
-# ── ensure_general_topic_nav ───────────────────────────────────────
+# ── cleanup_legacy_legend_pin ──────────────────────────────────────
 
-async def test_ensure_general_topic_nav_creates_pin_when_no_record(monkeypatch) -> None:
+async def test_cleanup_legacy_legend_pin_noop_without_record(monkeypatch) -> None:
     bot = make_bot()
-    bot.send_message.return_value = make_sent_message(800)
     session = AsyncMock()
 
     monkeypatch.setattr(topics, "get_system_message", AsyncMock(return_value=None))
-    upsert = AsyncMock()
-    monkeypatch.setattr(topics, "upsert_system_message", upsert)
+    delete_row = AsyncMock()
+    monkeypatch.setattr(topics, "delete_system_message", delete_row)
 
-    await topics.ensure_general_topic_nav(bot, session)
+    await topics.cleanup_legacy_legend_pin(bot, session)
 
-    bot.send_message.assert_awaited_once()
-    bot.pin_chat_message.assert_awaited_once()
-    upsert.assert_awaited_once()
+    bot.delete_message.assert_not_awaited()
+    delete_row.assert_not_awaited()
 
 
-async def test_ensure_general_topic_nav_edits_when_record_exists(monkeypatch) -> None:
+async def test_cleanup_legacy_legend_pin_unpins_deletes_and_drops_row(monkeypatch) -> None:
     bot = make_bot()
     session = AsyncMock()
-
     existing = SimpleNamespace(chat_id=-100333, message_id=800)
+
     monkeypatch.setattr(topics, "get_system_message", AsyncMock(return_value=existing))
+    delete_row = AsyncMock()
+    monkeypatch.setattr(topics, "delete_system_message", delete_row)
 
-    await topics.ensure_general_topic_nav(bot, session)
+    await topics.cleanup_legacy_legend_pin(bot, session)
 
-    bot.edit_message_text.assert_awaited_once()
-    bot.send_message.assert_not_awaited()
-    bot.pin_chat_message.assert_not_awaited()
+    bot.unpin_chat_message.assert_awaited_once()
+    bot.delete_message.assert_awaited_once()
+    delete_row.assert_awaited_once_with(session, "general:legend")
 
 
 # ── ensure_user_topic — passes icon kwargs ─────────────────────────
@@ -511,45 +532,70 @@ async def test_ensure_user_topic_omits_icon_kwargs_when_style_has_none(monkeypat
     assert "icon_custom_emoji_id" not in create_kwargs
 
 
-# ── ensure_general_topic_nav — not modified branch ────────────────
+# ── cleanup_legacy_legend_pin — already deleted / failure ─────────
 
-async def test_ensure_general_topic_nav_not_modified_is_noop(monkeypatch) -> None:
-    """edit_message_text raising 'not modified' should not propagate — function returns cleanly."""
+async def test_cleanup_legacy_legend_pin_drops_row_when_message_gone(monkeypatch) -> None:
+    """A legend message deleted by hand still gets its row cleaned up."""
     from aiogram.exceptions import TelegramAPIError
 
     bot = make_bot()
     session = AsyncMock()
     existing = SimpleNamespace(chat_id=-100333, message_id=800)
-    api_error = TelegramAPIError(method=MagicMock(), message="message is not modified")
-    bot.edit_message_text.side_effect = api_error
+    bot.delete_message.side_effect = TelegramAPIError(
+        method=MagicMock(), message="message to delete not found"
+    )
 
     monkeypatch.setattr(topics, "get_system_message", AsyncMock(return_value=existing))
+    delete_row = AsyncMock()
+    monkeypatch.setattr(topics, "delete_system_message", delete_row)
 
-    # Should not raise
-    await topics.ensure_general_topic_nav(bot, session)
+    await topics.cleanup_legacy_legend_pin(bot, session)
+
+    delete_row.assert_awaited_once_with(session, "general:legend")
 
 
-# ── ensure_general_topic_nav — message deleted, recreates ─────────
-
-async def test_ensure_general_topic_nav_recreates_when_message_deleted(monkeypatch) -> None:
-    """When edit fails with 'not found', a new message is sent and upserted."""
+async def test_cleanup_legacy_legend_pin_rewrites_message_too_old_to_delete(monkeypatch) -> None:
+    """Telegram refuses to delete an old message — leave a pointer and stop retrying."""
     from aiogram.exceptions import TelegramAPIError
 
     bot = make_bot()
-    bot.send_message.return_value = make_sent_message(900)
     session = AsyncMock()
     existing = SimpleNamespace(chat_id=-100333, message_id=800)
-    api_error = TelegramAPIError(method=MagicMock(), message="message to edit not found")
-    bot.edit_message_text.side_effect = api_error
+    bot.delete_message.side_effect = TelegramAPIError(
+        method=MagicMock(), message="message can't be deleted"
+    )
 
     monkeypatch.setattr(topics, "get_system_message", AsyncMock(return_value=existing))
-    upsert = AsyncMock()
-    monkeypatch.setattr(topics, "upsert_system_message", upsert)
+    delete_row = AsyncMock()
+    monkeypatch.setattr(topics, "delete_system_message", delete_row)
 
-    await topics.ensure_general_topic_nav(bot, session)
+    await topics.cleanup_legacy_legend_pin(bot, session)
 
-    bot.send_message.assert_awaited_once()
-    upsert.assert_awaited_once()
+    bot.edit_message_text.assert_awaited_once()
+    delete_row.assert_awaited_once_with(session, "general:legend")
+
+
+async def test_cleanup_legacy_legend_pin_drops_row_even_when_edit_fails(monkeypatch) -> None:
+    """Neither delete nor edit works: warn once, drop the row, never retry."""
+    from aiogram.exceptions import TelegramAPIError
+
+    bot = make_bot()
+    session = AsyncMock()
+    existing = SimpleNamespace(chat_id=-100333, message_id=800)
+    bot.delete_message.side_effect = TelegramAPIError(
+        method=MagicMock(), message="message can't be deleted"
+    )
+    bot.edit_message_text.side_effect = TelegramAPIError(
+        method=MagicMock(), message="not enough rights"
+    )
+
+    monkeypatch.setattr(topics, "get_system_message", AsyncMock(return_value=existing))
+    delete_row = AsyncMock()
+    monkeypatch.setattr(topics, "delete_system_message", delete_row)
+
+    await topics.cleanup_legacy_legend_pin(bot, session)
+
+    delete_row.assert_awaited_once_with(session, "general:legend")
 
 
 # ── repost_submission_card ──────────────────────────────────────────

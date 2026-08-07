@@ -4,7 +4,7 @@ Adds the ``moderator_invites`` table for one-time deep-link invites, plus
 ``users.role_granted_by`` / ``users.role_granted_at`` recording who last
 changed a user's role and when (both NULL for config-bootstrapped users).
 
-Revision ID: f736150e6fa0
+Revision ID: 0003_moderator_invites
 Revises: 0002_created_at_not_null
 Create Date: 2026-08-07 02:12:03.556252
 """
@@ -15,7 +15,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'f736150e6fa0'
+revision: str = '0003_moderator_invites'
 down_revision: Union[str, None] = '0002_created_at_not_null'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

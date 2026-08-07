@@ -24,6 +24,8 @@ from core.messages import (
     TOPIC_CONTACT_FROM_VIEWER,
     TOPIC_NOTIFY_BANNED,
     TOPIC_NOTIFY_CAPTION_CHANGED,
+    TOPIC_NOTIFY_DIRECT_FROM_MODERATOR,
+    TOPIC_NOTIFY_DIRECT_FROM_VIEWER,
     TOPIC_NOTIFY_MEDIA_CHANGED,
     TOPIC_NOTIFY_PUBLISHED_BY_MOD,
     TOPIC_NOTIFY_PUBLISHED_SCHEDULED,
@@ -306,3 +308,32 @@ async def notify_contact_from_viewer(
         return
     msg = TOPIC_CONTACT_FROM_VIEWER.format(text=html.escape(text))
     await _send(bot, topic_id, msg)
+
+
+async def notify_direct_from_moderator(
+    bot: Bot,
+    session: AsyncSession,
+    user: User,
+    moderator: User,
+    text: str,
+) -> None:
+    """Notify the author's forum topic about a direct (submission-less) moderator message."""
+    topic = await get_user_topic(session, user.id)
+    if topic is None:
+        return
+    msg = TOPIC_NOTIFY_DIRECT_FROM_MODERATOR.format(mod=_mod_display(moderator), text=text)
+    await _send(bot, topic.topic_id, msg)
+
+
+async def notify_direct_from_viewer(
+    bot: Bot,
+    session: AsyncSession,
+    user: User,
+    text: str,
+) -> None:
+    """Notify the author's forum topic about their reply on the direct channel."""
+    topic = await get_user_topic(session, user.id)
+    if topic is None:
+        return
+    msg = TOPIC_NOTIFY_DIRECT_FROM_VIEWER.format(text=text)
+    await _send(bot, topic.topic_id, msg)

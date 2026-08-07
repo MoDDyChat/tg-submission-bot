@@ -15,6 +15,8 @@ from db.models import User
 from db.queries import ban_user, get_submission_with_user
 from keyboards.callbacks import SubmissionCB
 from services import admin_notifications, edit_lock, topic_notifications, topics
+from services.author_card import request_author_card
+from services.dashboard import request_dashboard
 from states.moderator import ModeratorReview
 from utils.html_entities import get_html_text
 
@@ -94,6 +96,8 @@ async def handle_ban_reason(
         await message.answer(msg.BAN_TARGET_IS_MODERATOR)
         return
     logger.info("Пользователь id:%d заблокирован. Причина: %s", user_id, reason)
+    request_author_card(user_id)
+    request_dashboard()
 
     await admin_notifications.notify_admins(
         message.bot, session,

@@ -17,6 +17,7 @@ from services.media_append import cancel_append_for_sub
 from states.moderator import ModeratorReview, STATE_CATEGORY
 
 from ._helpers import _delete_tracked_messages
+from .author_card import router as author_card_router
 from .ban import router as ban_router
 from .edit import router as edit_router
 from .management import router as management_router, show_moderator_home
@@ -50,6 +51,7 @@ router.include_router(reject_router)
 router.include_router(publish_now_router)
 router.include_router(unschedule_router)
 router.include_router(schedule_router)
+router.include_router(author_card_router)
 
 
 @router.callback_query(F.data == "noop")
@@ -169,6 +171,21 @@ async def _cancel_substate(
     await message.answer(msg.CANCEL_REVERTED)
 
 
+async def _cancel_author_card(
+    message: Message,
+    state: FSMContext,
+    data: dict,
+) -> None:
+    """Cancel an author-card sub-flow. No edit lock is taken by the author card — nothing to release."""
+    if prompt_id := data.get("prompt_message_id"):
+        try:
+            await message.bot.delete_message(message.chat.id, prompt_id)
+        except Exception:
+            pass
+    await state.clear()
+    await message.answer(msg.AUTHOR_CARD_CANCELLED)
+
+
 @router.message(Command("cancel"))
 async def cmd_moderator_cancel(
     message: Message,
@@ -195,6 +212,10 @@ async def cmd_moderator_cancel(
 
     if category == "sub" and sub_id:
         await _cancel_substate(message, session, state, db_user, sub_id, data)
+        return
+
+    if category == "author_card":
+        await _cancel_author_card(message, state, data)
         return
 
     # Fallback for any unrecognised state

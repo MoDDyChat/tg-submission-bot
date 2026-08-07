@@ -25,6 +25,8 @@ from db.queries import (
 from keyboards.callbacks import ConfirmCB, SubmissionCB
 from keyboards.moderator import confirm_publish_now_kb
 from services import edit_lock
+from services.author_card import request_author_card
+from services.dashboard import request_dashboard
 from services.publisher import publish_post
 from services.topics_queue import render_queue as _render_queue
 from states.moderator import ModeratorReview
@@ -126,6 +128,8 @@ async def handle_publish_now_confirm(
         await edit_lock.release_lock(session, "submission", str(sub_id), db_user.id)
 
         await _render_queue(callback.bot, session)
+        request_dashboard()
+        request_author_card(sub.user.id)
 
         await _delete_tracked_messages(
             callback.bot, callback.message.chat.id, data,

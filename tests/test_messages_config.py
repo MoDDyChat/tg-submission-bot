@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import re
 from pathlib import Path
 from string import Formatter
 
@@ -121,3 +123,37 @@ def test_non_dict_yaml_root_is_rejected(tmp_path: Path) -> None:
     p.write_text(yaml.safe_dump(["not", "a", "dict"]), encoding="utf-8")
     with pytest.raises(MessagesConfigError, match="словарь"):
         messages._load(str(p))
+
+
+def test_direct_reply_pattern_matches_only_direct_message() -> None:
+    assert re.search(
+        messages.DIRECT_REPLY_PATTERN, messages.MODERATOR_DIRECT_MESSAGE_TO_VIEWER
+    )
+    assert not re.search(
+        messages.DIRECT_REPLY_PATTERN, messages.MODERATOR_MESSAGE_TO_VIEWER
+    )
+
+
+def test_direct_message_override_without_pattern_substring_fails_import(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    original_path = config.messages_path
+    p = tmp_path / "messages.yaml"
+    p.write_text(
+        yaml.safe_dump(
+            {
+                "MODERATOR_DIRECT_MESSAGE_TO_VIEWER": (
+                    "✉️ <b>Уведомление от модерации</b>\n\n{text}\n\n"
+                    "<i>Ответьте на это сообщение (reply), чтобы написать модераторам.</i>"
+                )
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "messages_path", str(p))
+    with pytest.raises(MessagesConfigError):
+        importlib.reload(messages)
+    # Упавший reload оставил в модуле невалидный override — восстановить
+    # рабочее состояние, чтобы не задеть остальные тесты.
+    monkeypatch.setattr(config, "messages_path", original_path)
+    importlib.reload(messages)

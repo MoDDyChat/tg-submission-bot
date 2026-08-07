@@ -2,7 +2,8 @@
 
 import re
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import BaseFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -23,6 +24,23 @@ logger = get_logger(__name__)
 router = Router()
 
 _SUB_ID_PATTERN = re.compile(msg.VIEWER_REPLY_PATTERN)
+_DIRECT_PATTERN = re.compile(msg.DIRECT_REPLY_PATTERN)
+
+
+def _is_reply_to_bot(message: Message) -> bool:
+    """True when the replied-to message was actually sent by this bot.
+
+    A viewer can craft a message whose own text matches the moderator-reply
+    pattern and then reply to it, forging a fake "moderator conversation".
+    Checking authorship closes that: only messages this bot itself sent can
+    trigger the moderator-reply filters, regardless of their text.
+    """
+    replied = message.reply_to_message
+    if replied is None or replied.from_user is None:
+        return False
+    if not replied.from_user.is_bot:
+        return False
+    return replied.from_user.id == message.bot.id
 
 
 class IsModeratorReply(BaseFilter):
@@ -30,10 +48,25 @@ class IsModeratorReply(BaseFilter):
 
     async def __call__(self, message: Message) -> bool:
         replied = message.reply_to_message
-        if not replied:
+        if not replied or not _is_reply_to_bot(message):
             return False
         text = replied.text or replied.caption or ""
+        if _DIRECT_PATTERN.search(text):
+            # The direct channel takes priority: a moderator's direct message
+            # can itself contain "поста #NN" inside the forwarded {text}.
+            return False
         return bool(_SUB_ID_PATTERN.search(text))
+
+
+class IsDirectModeratorReply(BaseFilter):
+    """True when the message replies to a direct (submission-less) moderator message."""
+
+    async def __call__(self, message: Message) -> bool:
+        replied = message.reply_to_message
+        if not replied or not _is_reply_to_bot(message):
+            return False
+        text = replied.text or replied.caption or ""
+        return bool(_DIRECT_PATTERN.search(text))
 
 
 # ── Moderator initiates contact ───────────────────────────────────
@@ -136,5 +169,56 @@ async def handle_viewer_reply(
 
 @router.message(IsModeratorReply(), F.photo | F.video | F.animation | F.document)
 async def handle_viewer_reply_media(message: Message) -> None:
+    """Viewer tried to reply with media — only text replies are supported."""
+    await message.answer(msg.REPLY_TEXT_ONLY)
+
+
+# ── Direct channel (submission-less contact) ──────────────────────
+
+async def deliver_direct_message(
+    bot: Bot,
+    session: AsyncSession,
+    *,
+    target: User,
+    moderator: User,
+    text_html: str,
+) -> bool:
+    """Send a direct DM from a moderator to a viewer, unrelated to any submission.
+
+    Returns True on success. Telegram errors are swallowed (best-effort) —
+    the caller decides what to show the moderator.
+    """
+    try:
+        await bot.send_message(
+            target.telegram_id,
+            msg.MODERATOR_DIRECT_MESSAGE_TO_VIEWER.format(text=text_html),
+            parse_mode="HTML",
+        )
+    except TelegramAPIError as e:
+        logger.warning("Не удалось отправить прямое сообщение пользователю %d: %s", target.telegram_id, e)
+        return False
+
+    await create_message(session, None, moderator.telegram_id, text_html, target_user_id=target.id)
+    await topic_notifications.notify_direct_from_moderator(bot, session, target, moderator, text_html)
+    return True
+
+
+@router.message(IsDirectModeratorReply(), F.text)
+async def handle_viewer_direct_reply(
+    message: Message,
+    session: AsyncSession,
+    db_user: User,
+) -> None:
+    """Handle viewer replying with text to a direct moderator message."""
+    message_html = get_html_text(message)
+    await create_message(session, None, message.from_user.id, message_html, target_user_id=db_user.id)
+    await topic_notifications.notify_direct_from_viewer(message.bot, session, db_user, message_html)
+
+    logger.info("%s ответил модераторам напрямую", fmt_user(db_user))
+    await message.answer(msg.DIRECT_REPLY_SENT)
+
+
+@router.message(IsDirectModeratorReply(), F.photo | F.video | F.animation | F.document)
+async def handle_viewer_direct_reply_media(message: Message) -> None:
     """Viewer tried to reply with media — only text replies are supported."""
     await message.answer(msg.REPLY_TEXT_ONLY)

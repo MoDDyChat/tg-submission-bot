@@ -44,6 +44,7 @@ class User(Base):
     )
     is_banned: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     ban_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    moderator_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -138,6 +139,7 @@ class Publication(Base):
     edited_caption: Mapped[str | None] = mapped_column(Text)
     publish_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    dead_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     channel_message_id: Mapped[int | None] = mapped_column(BigInteger)
     channel_message_ids: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -220,17 +222,23 @@ class Message(Base):
     __tablename__ = "messages"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    submission_id: Mapped[int] = mapped_column(
-        ForeignKey("submissions.id", ondelete="CASCADE"), nullable=False,
+    submission_id: Mapped[int | None] = mapped_column(
+        ForeignKey("submissions.id", ondelete="CASCADE"), nullable=True,
     )
     sender_telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    target_user_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_messages_target_user_id_users"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    submission: Mapped["Submission"] = relationship(back_populates="messages")
+    submission: Mapped["Submission | None"] = relationship(back_populates="messages")
 
     __table_args__ = (
         Index("idx_messages_submission_id", "submission_id"),
+        Index("idx_messages_target_user_id", "target_user_id"),
     )
 
 

@@ -17,6 +17,8 @@ from db.queries import (
 )
 from keyboards.viewer import submission_confirmed_kb
 from services import topics
+from services.author_card import request_author_card
+from services.dashboard import request_dashboard
 from services.topics_queue import render_queue as _render_queue
 from utils.html_entities import get_html_caption, get_html_text
 from utils.media import extract_media_info
@@ -124,6 +126,8 @@ async def _finalize_media_group(
                     await topics.post_submission_card(first_msg.bot, session, sub_full)
                     await topics.request_topic_title_sync(session, sub_full.user.id)
                     await _render_queue(first_msg.bot, session)
+                    request_dashboard()
+                    request_author_card(db_user.id)
                     await session.commit()
                 except Exception:
                     await first_msg.answer(msg.SUBMISSION_SEND_ERROR)
@@ -186,6 +190,8 @@ async def submit_single_media(message: Message, session: AsyncSession, db_user: 
             await topics.post_submission_card(message.bot, session, sub_full)
             await topics.request_topic_title_sync(session, sub_full.user.id)
             await _render_queue(message.bot, session)
+            request_dashboard()
+            request_author_card(db_user.id)
         except Exception:
             logger.error("Не удалось отправить пост #%d в тему форума", sub.id)
             await message.answer(msg.SUBMISSION_SEND_ERROR)
@@ -218,6 +224,8 @@ async def submit_text(message: Message, session: AsyncSession, db_user: User) ->
             await topics.post_submission_card(message.bot, session, sub_full)
             await topics.request_topic_title_sync(session, sub_full.user.id)
             await _render_queue(message.bot, session)
+            request_dashboard()
+            request_author_card(db_user.id)
         except Exception:
             logger.error("Не удалось отправить текстовый пост #%d в тему форума", sub.id)
             await message.answer(msg.SUBMISSION_SEND_ERROR)

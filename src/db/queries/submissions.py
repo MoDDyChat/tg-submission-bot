@@ -1,5 +1,7 @@
 """Submission-related DB queries."""
 
+from datetime import datetime
+
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -98,3 +100,21 @@ async def get_submission_by_topic_card_id(
     stmt = select(Submission).where(Submission.topic_card_message_id == msg_id)
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def count_submissions_by_status(session: AsyncSession) -> dict[str, int]:
+    """Return a ``{status: count}`` mapping over all submissions."""
+    stmt = select(Submission.status, func.count()).group_by(Submission.status)
+    result = await session.execute(stmt)
+    return {status: count for status, count in result.all()}
+
+
+async def count_recent_rejections(session: AsyncSession, since: datetime) -> int:
+    """Count submissions rejected at or after *since*."""
+    stmt = (
+        select(func.count())
+        .select_from(Submission)
+        .where(Submission.status == "rejected", Submission.updated_at >= since)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one()

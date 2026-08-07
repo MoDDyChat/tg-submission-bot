@@ -25,6 +25,7 @@ user input (names, captions, reasons) directly into format strings without escap
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from string import Formatter
 
@@ -53,6 +54,12 @@ TOPIC_LEGEND_STATUS_KEYS = (
 # MODERATOR_MESSAGE_TO_VIEWER below — if that wording changes, this regex must
 # change with it, so it is intentionally NOT exposed via messages.yaml.
 VIEWER_REPLY_PATTERN = r"поста #(\d+)"
+
+# Паттерн для фильтра IsDirectModeratorReply в contact.py: отличает прямое
+# сообщение от модерации (без привязки к заявке) от сообщения по поводу поста.
+# Завязан на дословную формулировку внутри MODERATOR_DIRECT_MESSAGE_TO_VIEWER
+# ниже — поэтому, как и VIEWER_REPLY_PATTERN, намеренно не выносится в YAML.
+DIRECT_REPLY_PATTERN = r"Сообщение от модерации"
 
 # Built-in defaults — also the reference used to validate config/messages.yaml
 # overrides (placeholder sets for strings, sub-key sets for dicts).
@@ -187,6 +194,7 @@ _DEFAULTS: dict[str, str | dict[str, str]] = {
     'TOPIC_LEGEND_DESCRIPTIONS': {'pending': 'пост ждёт модерации', 'editing': 'модератор редактирует прямо сейчас', 'scheduled': 'запланировано', 'published': 'опубликовано', 'rejected': 'последний пост отклонён', 'cancelled': 'последний пост отменён автором'},
     'TOPIC_NAV_LEGEND_TEMPLATE': '<b>Легенда</b>\n\n<b>Статусы тем (иконка — цвет темы):</b>\n{status_lines}\n\n<b>Полезные команды модератора:</b>\n• Редактирование пресетов тегов — {panel_link} → «Управление» → «Пресеты тегов»\n• Разбан пользователей — {panel_link} → «Управление» → «Заблокированные»\n',
     'TOPIC_NAV_PANEL_LINK': '<a href="https://t.me/{bot_username}?start=panel">панель модератора</a>',
+    'LEGEND_MOVED_NOTICE': 'ℹ️ Легенда статусов переехала в закреплённую сводку предложки.',
     'TOPIC_NAV_PANEL_PLAIN': 'панель модератора (DM боту → /start)',
     'TOPIC_WELCOME_TEXT': '👤 Тема пользователя: {display}\n\nЗдесь появляются все посты этого автора и переписка с модерацией.',
     'MODERATOR_POST_LOCKED': '🔒 Пост #{sub_id} сейчас редактирует {mod}. Попробуйте позже.',
@@ -262,6 +270,53 @@ _DEFAULTS: dict[str, str | dict[str, str]] = {
     'MANAGEMENT_LOCK_LOST': '⌛ Ваша сессия управления истекла. Войдите в раздел заново.',
     'RECOVER_ADMIN_ONLY': '⛔ Функция Recover доступна только администраторам.',
     'RECOVER_ALREADY_RUNNING': '♻️ Recover уже запущен. Дождитесь его завершения.',
+    # ── Author card ───────────────────────────────────────────────────
+    'AUTHOR_CARD_TEXT': '👤 <b>{name}</b>{username_line}\nID: <code>{telegram_id}</code>\nПервая заявка: {first_seen}\n\nВсего заявок: <b>{total}</b>\n✅ Опубликовано: {published}   ❌ Отклонено: {rejected}\n🕓 В очереди: {pending}   🗓 Запланировано: {scheduled}{ban_line}{note_line}',
+    'AUTHOR_CARD_USERNAME_LINE': ' (@{username})',
+    'AUTHOR_CARD_BAN_LINE': '\n\n🚫 <b>Заблокирован.</b> Причина: {reason}',
+    'AUTHOR_CARD_NO_BAN_LINE': '',
+    'AUTHOR_CARD_NOTE_LINE': '\n\n📝 Заметка: {note}',
+    'AUTHOR_CARD_NO_NOTE_LINE': '',
+    'AUTHOR_CARD_FIRST_SEEN_NEVER': '—',
+    'AUTHOR_CARD_TOPIC_LINK': '\n\n<a href="{url}">Перейти в тему автора</a>',
+    'AUTHOR_CARD_BTN_BAN': '🚫 Забанить',
+    'AUTHOR_CARD_BTN_UNBAN': '♻️ Разбанить',
+    'AUTHOR_CARD_BTN_NOTE': '📝 Заметка',
+    'AUTHOR_CARD_BTN_CONTACT': '✉️ Связаться',
+    'AUTHOR_CARD_BTN_CANCEL': '✖️ Отмена',
+    'AUTHOR_CARD_NOTE_PROMPT': 'Отправьте текст заметки об авторе {user} следующим сообщением. Пустая заметка — отправьте «-».',
+    'AUTHOR_CARD_NOTE_SAVED': 'Заметка сохранена.',
+    'AUTHOR_CARD_NOTE_CLEARED': 'Заметка удалена.',
+    'AUTHOR_CARD_BAN_PROMPT': 'Причина блокировки автора {user}? Отправьте текст следующим сообщением.',
+    'AUTHOR_CARD_UNBANNED': 'Автор {user} разблокирован.',
+    'AUTHOR_CARD_CANCELLED': 'Действие отменено.',
+    'AUTHOR_CARD_CANNOT_BAN_MODERATOR': 'Нельзя заблокировать модератора или администратора.',
+    'AUTHOR_CARD_CONTACT_PROMPT': 'Что передать автору {user}? Отправьте текст следующим сообщением.',
+    # ── /user command ─────────────────────────────────────────────────
+    'USER_LOOKUP_USAGE': 'Использование: <code>/user &lt;telegram_id&gt;</code> или <code>/user @username</code>',
+    'USER_LOOKUP_NOT_FOUND': 'Пользователь не найден в базе. По @username находятся только те, кто уже писал боту.',
+    'USER_LOOKUP_AMBIGUOUS': 'Найдено несколько пользователей с таким ником — Telegram позволяет менять username, и старая запись могла остаться в базе. Укажи числовой Telegram ID (<code>/user &lt;telegram_id&gt;</code>).',
+    'USER_LOOKUP_NO_TOPIC': 'У автора ещё нет темы в группе (не присылал заявок).',
+    # ── Dashboard ─────────────────────────────────────────────────────
+    'DASHBOARD_TEXT': '📊 <b>Сводка предложки</b>\n\n🕓 В очереди: <b>{pending}</b>\n🗓 Запланировано: <b>{scheduled}</b>\n⛔️ Мертво: <b>{dead}</b>\n✅ Опубликовано за 7 дней: {published_7d}\n❌ Отклонено за 7 дней: {rejected_7d}\n\n{locks_block}',
+    'DASHBOARD_LOCKS_HEADER': '✏️ <b>Сейчас в работе:</b>',
+    'DASHBOARD_LOCK_SUBMISSION': '• {mod} → пост #{sub_id}',
+    'DASHBOARD_LOCK_MANAGEMENT': '• {mod} → раздел «{section}»',
+    'DASHBOARD_LOCKS_EMPTY': '✏️ Сейчас никто ничего не редактирует.',
+    'DASHBOARD_LOCKS_MORE': '… и ещё {count}',
+    'DASHBOARD_SECTION_LABELS': {'presets': 'Пресеты тегов', 'banned': 'Забаненные', 'moderators': 'Модераторы'},
+    # ── Dead publications ─────────────────────────────────────────────
+    'SCHEDULE_DEAD_HEADER': '⛔️ <b>Не будут опубликованы (задача не создана):</b>',
+    'SCHEDULE_DEAD_LINE': '<b>{date} {time}</b> · {author} (#{sub_id}) → {link}',
+    'ADMIN_NOTIFY_DEAD_PUBLICATIONS': '⛔️ При старте найдено просроченных публикаций: <b>{count}</b>. Они просрочены более чем на 24 часа и не были поставлены в расписание — сами не выйдут.\n\n{items}\n\nПерепланируйте или отклоните их вручную.',
+    'ADMIN_NOTIFY_DEAD_PUBLICATION_ITEM': '• пост #{sub_id} — было запланировано на {when}',
+    # ── Direct channel ────────────────────────────────────────────────
+    'MODERATOR_DIRECT_MESSAGE_TO_VIEWER': '✉️ <b>Сообщение от модерации</b>\n\n{text}\n\n<i>Ответьте на это сообщение (reply), чтобы написать модераторам.</i>',
+    'DIRECT_REPLY_SENT': 'Ответ отправлен модераторам.',
+    'TOPIC_NOTIFY_DIRECT_FROM_MODERATOR': '✉️ {mod} написал автору напрямую:\n{text}',
+    'TOPIC_NOTIFY_DIRECT_FROM_VIEWER': '💬 Автор ответил:\n{text}',
+    'DIRECT_MESSAGE_SENT': 'Сообщение отправлено автору.',
+    'DIRECT_MESSAGE_FAILED': 'Не удалось доставить сообщение автору (возможно, он заблокировал бота).',
 }
 
 
@@ -351,3 +406,9 @@ def _load(path: str | Path | None) -> dict[str, str | dict[str, str]]:
 
 
 globals().update(_load(config.messages_path))
+
+if not re.search(DIRECT_REPLY_PATTERN, globals()["MODERATOR_DIRECT_MESSAGE_TO_VIEWER"]):
+    raise MessagesConfigError(
+        "MODERATOR_DIRECT_MESSAGE_TO_VIEWER обязан содержать подстроку "
+        "«Сообщение от модерации» — на неё завязан фильтр IsDirectModeratorReply."
+    )

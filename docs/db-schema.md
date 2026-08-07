@@ -17,6 +17,7 @@
 | is_admin | BOOLEAN NOT NULL DEFAULT false | Admin flag (subset of moderators) |
 | is_banned | BOOLEAN NOT NULL DEFAULT false | Whether the user is banned |
 | ban_reason | TEXT | Ban reason (nullable) |
+| moderator_note | TEXT | Moderator's private note about the author, shown on the author card (nullable) |
 | created_at | TIMESTAMPTZ NOT NULL DEFAULT NOW() | |
 | updated_at | TIMESTAMPTZ NOT NULL DEFAULT NOW() | Updated automatically via onupdate |
 
@@ -84,6 +85,7 @@
 | published_at | TIMESTAMPTZ | Actual publish time (NULL until published) |
 | channel_message_id | BIGINT | ID of the first message in the channel after publishing |
 | channel_message_ids | JSON | All channel message IDs (for media groups) |
+| dead_at | TIMESTAMPTZ | NULL = alive. Set by `recover_scheduled_jobs` on startup when a publication is overdue by more than 24h with no APScheduler job to recover; the `dead_at IS NULL` guard in the UPDATE makes marking it idempotent, so the admin DM fires only once. Cleared (reset to NULL) when the publication is rescheduled |
 | created_at | TIMESTAMPTZ NOT NULL DEFAULT NOW() | |
 | updated_at | TIMESTAMPTZ NOT NULL DEFAULT NOW() | |
 
@@ -126,10 +128,13 @@
 | Field | Type | Description |
 |------|-----|----------|
 | id | BIGSERIAL PK | |
-| submission_id | BIGINT NOT NULL FK → submissions.id ON DELETE CASCADE | Linked post |
+| submission_id | BIGINT FK → submissions.id ON DELETE CASCADE | Linked post; nullable — NULL for direct (submission-less) moderator ↔ viewer correspondence |
 | sender_telegram_id | BIGINT NOT NULL | Who sent it |
 | text | TEXT NOT NULL | HTML message text |
+| target_user_id | BIGINT FK → users.id ON DELETE CASCADE | Set together with a NULL `submission_id`: identifies the direct conversation thread (the viewer being messaged), on both the moderator's and the viewer's message rows |
 | created_at | TIMESTAMPTZ NOT NULL DEFAULT NOW() | |
+
+**Index:** idx_messages_target_user_id (`target_user_id`).
 
 ### system_messages
 | Field | Type | Description |
@@ -146,6 +151,8 @@
 |-----|-----------|
 | `general:legend` | Status-legend message in the forum's General topic |
 | `general:queue:00`, `general:queue:01`, ... | Queue board chunks in the General topic; the number of chunks is dynamic |
+| `general:stats` | Dashboard: pinned stats summary in the General topic (`services/dashboard.py`) |
+| `user:<id>:card` | Author card: pinned per-author summary message in their forum topic, keyed by `users.id` (`services/author_card.py`) |
 
 **Logic:** `get_system_message(session, key)` → record or `None`; `upsert_system_message(session, key, chat_id, message_id, payload)` → INSERT ON CONFLICT UPDATE.
 
@@ -157,11 +164,11 @@ Functions are split across modules; all of them are re-exported from `db.queries
 
 | Module | Functions |
 |--------|--------|
-| `db.queries.users` | `get_or_create_user`, `ban_user`, `unban_user`, `get_banned_users`, `get_admin_users`, `get_user_by_id` |
-| `db.queries.submissions` | `create_submission`, `get_submission`, `get_submission_with_user`, `list_pending_submissions`, `get_active_submissions`, `count_pending_submissions`, `update_submission_status`, `update_submission_tags`, `update_submission_caption`, `get_submission_by_topic_card_id` |
+| `db.queries.users` | `get_or_create_user`, `ban_user`, `unban_user`, `get_banned_users`, `get_admin_users`, `get_user_by_id`, `get_user_by_telegram_id`, `get_user_by_username`, `set_moderator_note`, `get_author_stats` (returns `AuthorStats`: totals per submission status + `first_seen`) |
+| `db.queries.submissions` | `create_submission`, `get_submission`, `get_submission_with_user`, `list_pending_submissions`, `get_active_submissions`, `count_pending_submissions`, `count_submissions_by_status`, `count_recent_rejections`, `update_submission_status`, `update_submission_tags`, `update_submission_caption`, `get_submission_by_topic_card_id` |
 | `db.queries.submission_media` | `add_media`, `get_submission_media`, `delete_media` |
-| `db.queries.publications` | `create_publication`, `get_publication`, `get_publication_by_submission`, `get_unpublished_publications`, `mark_published`, `update_publication_time`, `delete_publication` |
+| `db.queries.publications` | `create_publication`, `get_publication`, `get_publication_by_submission`, `get_unpublished_publications`, `mark_published`, `mark_publication_dead`, `list_dead_publications`, `update_publication_time` (also clears `dead_at`), `count_recent_publications`, `delete_publication` |
 | `db.queries.tag_presets` | `list_tag_preset_sections`, `get_tag_preset_section`, `get_tag_preset_section_by_label`, `create_tag_preset_section`, `update_tag_preset_section`, `delete_tag_preset_section`, `list_tag_presets`, `list_tag_presets_grouped`, `get_tag_preset`, `find_tag_preset_conflicts`, `create_tag_preset`, `update_tag_preset`, `delete_tag_preset` |
-| `db.queries.messages` | `create_message` |
+| `db.queries.messages` | `create_message` (`submission_id` and `target_user_id` are mutually exclusive: topic conversations pass `submission_id`, direct conversations pass `target_user_id`) |
 | `db.queries.topics` | CRUD for `user_topics`/card IDs; `enqueue_topic_title_sync`, `ensure_topic_title_sync_pending`, `mark_topic_title_sync_applied`, `mark_topic_title_externally_drifted` for the title outbox |
 | `db.queries.system_messages` | `get_system_message`, `upsert_system_message`, `delete_system_message`, `list_system_messages_by_prefix` |

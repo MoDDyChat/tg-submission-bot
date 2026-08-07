@@ -113,8 +113,12 @@ async def test_recover_scheduled_jobs_restores_future_and_immediate_publications
     )
     schedule_post = Mock()
     publish_job = AsyncMock()
+    mark_dead = AsyncMock(return_value=True)
+    notify_admins_mock = AsyncMock()
     monkeypatch.setattr(scheduler, "schedule_post", schedule_post)
     monkeypatch.setattr(scheduler, "_publish_job", publish_job)
+    monkeypatch.setattr(scheduler, "mark_publication_dead", mark_dead)
+    monkeypatch.setattr(scheduler, "notify_admins", notify_admins_mock)
 
     await scheduler.recover_scheduled_jobs(bot, factory)
 
@@ -124,6 +128,48 @@ async def test_recover_scheduled_jobs_restores_future_and_immediate_publications
     assert scheduled_ids == {1, 2, 4}
     # immediate overdue job is rescheduled, NOT published directly
     publish_job.assert_not_awaited()
+    # skipped_pub (>24h overdue) is marked dead and reported to admins
+    mark_dead.assert_awaited_once_with(session, 3)
+    notify_admins_mock.assert_awaited_once()
+    assert notify_admins_mock.call_args.kwargs["actor"] is None
+    assert "3" in notify_admins_mock.call_args.kwargs["action_text"]
+
+
+async def test_recover_scheduled_jobs_marks_overdue_dead_and_notifies_once(monkeypatch) -> None:
+    """A publication overdue by 25h is marked dead and reported; a repeat run (dead_at
+    already set) sends no second notification, since mark_publication_dead returns False."""
+    fixed_now = datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fixed_now.replace(tzinfo=None)
+            return fixed_now.astimezone(tz)
+
+    session = AsyncMock()
+    factory = FakeSessionFactory(session)
+    bot = make_bot()
+    dead_pub = make_publication(pub_id=5, submission_id=50, publish_at=fixed_now - timedelta(hours=25))
+    recent_pub = make_publication(pub_id=6, submission_id=60, publish_at=fixed_now - timedelta(hours=1))
+
+    monkeypatch.setattr(scheduler, "datetime", FrozenDateTime)
+    monkeypatch.setattr(
+        scheduler,
+        "get_unpublished_publications",
+        AsyncMock(return_value=[dead_pub, recent_pub]),
+    )
+    monkeypatch.setattr(scheduler, "schedule_post", Mock())
+    mark_dead = AsyncMock(return_value=False)  # already dead_at set from a prior run
+    notify_admins_mock = AsyncMock()
+    monkeypatch.setattr(scheduler, "mark_publication_dead", mark_dead)
+    monkeypatch.setattr(scheduler, "notify_admins", notify_admins_mock)
+
+    await scheduler.recover_scheduled_jobs(bot, factory)
+
+    mark_dead.assert_awaited_once_with(session, 5)
+    # mark_publication_dead returned False (already dead) — no notification is sent
+    notify_admins_mock.assert_not_awaited()
 
 
 async def test_queue_render_job_calls_render_queue_with_force_reconcile(monkeypatch) -> None:
@@ -174,6 +220,31 @@ async def test_topic_cards_reconcile_job_hands_over_factory(monkeypatch) -> None
 
     reconcile.assert_awaited_once_with(bot, factory)
     session.commit.assert_not_awaited()
+
+
+def test_register_scheduled_jobs_includes_author_card_and_dashboard_jobs(mock_scheduler) -> None:
+    import core.bot as bot_mod
+
+    bot_mod._register_scheduled_jobs(make_bot(), Mock())
+
+    calls_by_id = {
+        call.kwargs["id"]: call for call in mock_scheduler.add_job.call_args_list
+    }
+
+    expected = {
+        "author_card_render": {"seconds": 60},
+        "author_card_reconcile": {"minutes": 10},
+        "dashboard_render": {"seconds": 60},
+    }
+    for job_id, interval_kwargs in expected.items():
+        assert job_id in calls_by_id, f"job {job_id} was not registered"
+        call = calls_by_id[job_id]
+        assert call.args[1] == "interval"
+        for key, value in interval_kwargs.items():
+            assert call.kwargs[key] == value
+        assert call.kwargs["max_instances"] == 1
+        assert call.kwargs["replace_existing"] is True
+        assert call.kwargs["coalesce"] is True
 
 
 async def test_topic_title_sync_job_processes_one_tick(monkeypatch) -> None:

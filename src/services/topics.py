@@ -35,14 +35,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from core.config import config
 from core.logging import get_logger
 from core.messages import (
+    LEGEND_MOVED_NOTICE,
     TOPIC_CARD_OUTDATED,
     TOPIC_WELCOME_TEXT,
 )
-from core.topic_status_config import build_topic_nav_legend
 from core.topic_status_config import get_style as _get_status_style
 from db.models import EditLock, Submission, User, UserTopic
 from db.queries import (
     clear_topic_card_ids,
+    delete_system_message,
     enqueue_topic_title_sync,
     ensure_topic_title_sync_pending,
     get_publication_by_submission,
@@ -54,9 +55,9 @@ from db.queries import (
     mark_card_rendered_if_unchanged,
     mark_topic_title_sync_applied,
     save_topic_card_ids,
-    upsert_system_message,
 )
 from keyboards.moderator import topic_submission_card_kb
+from services.author_card import create_author_card_message
 from utils.tags import format_tags_line
 
 logger = get_logger(__name__)
@@ -81,7 +82,7 @@ _ACTIVE_STATUS_PRIORITY = ["editing", "pending", "scheduled"]
 # Hint substrings returned by Telegram when a forum topic is closed
 _TOPIC_CLOSED_HINTS = ("topic_closed", "topic was closed")
 
-# Lock to serialise concurrent calls to ensure_general_topic_nav (single-process guard)
+# Lock to serialise concurrent calls to cleanup_legacy_legend_pin (single-process guard)
 _general_topic_nav_lock = asyncio.Lock()
 
 # Only one title-outbox consumer runs per bot process. APScheduler also uses
@@ -196,7 +197,10 @@ async def compute_topic_status_key(session: AsyncSession, user_id: int) -> str:
 async def ensure_user_topic(bot: Bot, session: AsyncSession, user: User) -> int:
     """Return the forum topic_id for a user, creating it if necessary.
 
-    On creation: posts a welcome system message to the new topic.
+    On creation: posts the author card as the topic's opening message and pins
+    it. If that fails, falls back to the plain welcome message — the topic must
+    not start empty, and ``scripts/backfill_author_cards.py`` can convert a
+    welcome message into a card later.
     """
     existing = await get_user_topic(session, user.id)
     if existing is not None:
@@ -253,20 +257,28 @@ async def ensure_user_topic(bot: Bot, session: AsyncSession, user: User) -> int:
         )
     await session.flush()
 
-    # Welcome message in the topic
-    display = f"@{user.username}" if user.username else html.escape(user.full_name)
+    # Opening message of the topic: the author card (pinned), welcome text as fallback.
     try:
-        await bot.send_message(
-            chat_id=config.moderator_group_id,
-            message_thread_id=topic_id,
-            text=TOPIC_WELCOME_TEXT.format(display=display),
-            disable_notification=True,
-        )
+        await create_author_card_message(bot, session, user, topic_id)
     except Exception:
         logger.warning(
-            "Не удалось отправить приветственное сообщение в тему %d (пользователь %d)",
-            topic_id, user.id,
+            "Не удалось создать карточку автора в теме %d (пользователь %d), "
+            "отправляем приветствие",
+            topic_id, user.id, exc_info=True,
         )
+        display = f"@{user.username}" if user.username else html.escape(user.full_name)
+        try:
+            await bot.send_message(
+                chat_id=config.moderator_group_id,
+                message_thread_id=topic_id,
+                text=TOPIC_WELCOME_TEXT.format(display=display),
+                disable_notification=True,
+            )
+        except Exception:
+            logger.warning(
+                "Не удалось отправить приветственное сообщение в тему %d (пользователь %d)",
+                topic_id, user.id,
+            )
 
     logger.info(
         "Создана тема форума %d для пользователя %d", topic_id, user.id
@@ -1202,56 +1214,60 @@ async def delete_submission_card(
     return success
 
 
-# ── General topic nav pin ──────────────────────────────────────────
+# ── Legacy legend pin cleanup ──────────────────────────────────────
 
-async def ensure_general_topic_nav(bot: Bot, session: AsyncSession) -> None:
-    """Ensure the status legend is pinned in the General topic of the moderator group.
+async def cleanup_legacy_legend_pin(bot: Bot, session: AsyncSession) -> None:
+    """Remove the standalone legend pin — the legend now lives inside the dashboard.
 
-    Idempotent: edits the existing message when possible, recreates it if the
-    message was deleted. Tracks the message_id in the ``system_messages`` table
-    under the key ``general:legend``. Best-effort: logs warnings on failure.
-
-    Uses a process-local asyncio lock to serialise concurrent calls (single-process bot).
+    One-shot migration run at startup: unpins and deletes the ``general:legend``
+    message, then drops its ``system_messages`` row so this becomes a no-op on
+    every later start. Telegram refuses to delete messages past its age limit
+    ("message can't be deleted") — an old legend is edited into a pointer to the
+    dashboard instead. Either way the row is dropped: keeping it would only make
+    every later startup retry an operation that cannot succeed. Idempotent and
+    safe when no such message ever existed.
     """
     async with _general_topic_nav_lock:
-        group_id = config.moderator_group_id
-        text = build_topic_nav_legend((await bot.me()).username or "")
+        legend = await get_system_message(session, "general:legend")
+        if legend is None:
+            return
+
         try:
-            legend = await get_system_message(session, "general:legend")
-            if legend is not None:
+            await bot.unpin_chat_message(
+                chat_id=legend.chat_id, message_id=legend.message_id
+            )
+        except TelegramAPIError as e:
+            logger.debug("Не удалось открепить старую легенду: %s", e)
+
+        try:
+            await bot.delete_message(
+                chat_id=legend.chat_id, message_id=legend.message_id
+            )
+        except TelegramAPIError as e:
+            err = str(e).lower()
+            if "message to delete not found" not in err and "message_id_invalid" not in err:
+                # Too old to delete — leave a pointer so the stale legend in the
+                # history doesn't contradict the one inside the dashboard.
                 try:
                     await bot.edit_message_text(
                         chat_id=legend.chat_id,
                         message_id=legend.message_id,
-                        text=text,
+                        text=LEGEND_MOVED_NOTICE,
                         disable_web_page_preview=True,
                     )
-                    logger.debug("Легенда статусов обновлена (message_id=%d)", legend.message_id)
-                    return
-                except TelegramAPIError as e:
-                    err = str(e).lower()
-                    if "message is not modified" in err:
-                        logger.debug("Легенда статусов не изменилась")
-                        return
-                    if "message to edit not found" in err or "message_id_invalid" in err:
-                        logger.info(
-                            "Легенда не найдена (message_id=%d), создаём заново",
-                            legend.message_id,
-                        )
-                        # Fall through to recreate
-                    else:
-                        logger.warning("Ошибка при обновлении легенды: %s", e)
-                        return
+                    logger.info(
+                        "Старую легенду (message_id=%d) удалить нельзя — заменена на указатель",
+                        legend.message_id,
+                    )
+                except TelegramAPIError as edit_error:
+                    logger.warning(
+                        "Старую легенду (message_id=%d) не удалось ни удалить (%s), "
+                        "ни отредактировать (%s) — уберите её вручную",
+                        legend.message_id, e, edit_error,
+                    )
 
-            # Send a new message and pin it
-            sent = await bot.send_message(
-                group_id, text, disable_notification=True, disable_web_page_preview=True
-            )
-            await bot.pin_chat_message(group_id, sent.message_id, disable_notification=True)
-            await upsert_system_message(session, "general:legend", group_id, sent.message_id)
-            logger.info("Легенда статусов создана и закреплена (message_id=%d)", sent.message_id)
-        except Exception:
-            logger.warning(
-                "Не удалось создать/закрепить легенду в General-теме группы",
-                exc_info=True,
-            )
+        await delete_system_message(session, "general:legend")
+        logger.info(
+            "Запись о старой легенде удалена (message_id=%d) — легенда переехала в сводку",
+            legend.message_id,
+        )

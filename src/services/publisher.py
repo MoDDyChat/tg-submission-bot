@@ -28,6 +28,8 @@ from db.queries import (
 )
 from services import topic_notifications
 from services import topics as topics_svc
+from services.author_card import request_author_card
+from services.dashboard import request_dashboard
 from services.topics_queue import render_queue as _render_queue
 from services.topics_queue import render_schedule as _render_schedule
 from utils.tags import compose_caption
@@ -315,6 +317,9 @@ async def publish_post(
             try:
                 await _render_queue(bot, cleanup_session)
                 await _render_schedule(bot, cleanup_session)
+                request_dashboard()
+                if fresh_sub:
+                    request_author_card(fresh_sub.user.id)
             except Exception:
                 logger.exception("Не удалось обновить очередь после публикации поста #%d", submission_id)
 

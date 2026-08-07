@@ -7,16 +7,21 @@ re-exports every public symbol so existing imports continue to work unchanged.
 from db.queries.messages import create_message
 from db.queries.moderators import count_admins, list_moderators, set_roles
 from db.queries.publications import (
+    count_recent_publications,
     create_publication,
     delete_publication,
     get_publication,
     get_publication_by_submission,
     get_unpublished_publications,
+    list_dead_publications,
+    mark_publication_dead,
     mark_published,
     update_publication_time,
 )
 from db.queries.submission_media import add_media, delete_media, get_submission_media
 from db.queries.submissions import (
+    count_recent_rejections,
+    count_submissions_by_status,
     create_submission,
     get_active_submissions,
     get_submission,
@@ -63,12 +68,16 @@ from db.queries.topics import (
     upsert_user_topic,
 )
 from db.queries.users import (
+    AuthorStats,
     ban_user,
     get_admin_users,
+    get_author_stats,
     get_banned_users,
     get_or_create_user,
     get_user_by_id,
     get_user_by_telegram_id,
+    get_users_by_username,
+    set_moderator_note,
     unban_user,
 )
 
@@ -80,11 +89,14 @@ __all__ = [
     "list_moderators",
     "set_roles",
     # publications
+    "count_recent_publications",
     "create_publication",
     "delete_publication",
     "get_publication",
     "get_publication_by_submission",
     "get_unpublished_publications",
+    "list_dead_publications",
+    "mark_publication_dead",
     "mark_published",
     "update_publication_time",
     # submission_media
@@ -92,6 +104,8 @@ __all__ = [
     "delete_media",
     "get_submission_media",
     # submissions
+    "count_recent_rejections",
+    "count_submissions_by_status",
     "create_submission",
     "get_active_submissions",
     "get_submission",
@@ -134,11 +148,15 @@ __all__ = [
     "update_user_topic_status",
     "upsert_user_topic",
     # users
+    "AuthorStats",
     "ban_user",
     "get_admin_users",
+    "get_author_stats",
     "get_banned_users",
     "get_or_create_user",
     "get_user_by_id",
     "get_user_by_telegram_id",
+    "get_users_by_username",
+    "set_moderator_note",
     "unban_user",
 ]

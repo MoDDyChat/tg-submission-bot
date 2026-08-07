@@ -9,3 +9,6 @@ logs/
 alembic/versions/__pycache__
 *.md
 .claude/
+.mypy_cache
+.pytest_cache
+.ruff_cache

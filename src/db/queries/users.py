@@ -1,11 +1,14 @@
 """User-related DB queries."""
 
+from dataclasses import dataclass
+from datetime import datetime
+
 from sqlalchemy import func, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.exceptions import CannotBanModeratorError
-from db.models import User
+from db.models import Submission, User
 
 
 async def get_or_create_user(
@@ -109,3 +112,76 @@ async def get_user_by_telegram_id(session: AsyncSession, telegram_id: int) -> Us
     """Return a User by Telegram user id, or None."""
     result = await session.execute(select(User).where(User.telegram_id == telegram_id))
     return result.scalar_one_or_none()
+
+
+async def get_users_by_username(session: AsyncSession, username: str) -> list[User]:
+    """Return up to 2 Users matching *username* (case-insensitive).
+
+    ``username`` is not unique in the schema: a Telegram handle can be
+    released and picked up by someone else, leaving a stale row with the old
+    owner's ``username`` unless it's manually cleared — nothing in the row
+    (not even ``updated_at``, which changes on bans/notes/role edits unrelated
+    to identity) tells us which row is the *current* holder of the handle.
+    Rather than guess, this returns every match (capped at 2, just enough to
+    tell "one" from "more than one") and leaves the ambiguity to the caller:
+    a human with the numeric Telegram id is the only reliable tiebreaker.
+    """
+    stmt = (
+        select(User)
+        .where(func.lower(User.username) == username.lower())
+        .order_by(User.id)
+        .limit(2)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def set_moderator_note(session: AsyncSession, user_id: int, note: str | None) -> None:
+    """Set or clear (``note=None``) the moderator's note about the user."""
+    stmt = (
+        update(User)
+        .where(User.id == user_id)
+        .values(moderator_note=note, updated_at=func.now())
+    )
+    await session.execute(stmt)
+    await session.flush()
+
+
+@dataclass(frozen=True)
+class AuthorStats:
+    total: int
+    published: int
+    rejected: int
+    pending: int
+    scheduled: int
+    cancelled: int
+    first_seen: datetime | None
+
+
+async def get_author_stats(session: AsyncSession, user_id: int) -> AuthorStats:
+    """Aggregate submission counts per status for the author *user_id*."""
+    stmt = (
+        select(
+            Submission.status,
+            func.count().label("cnt"),
+            func.min(Submission.created_at).label("first_seen"),
+        )
+        .where(Submission.user_id == user_id)
+        .group_by(Submission.status)
+    )
+    result = await session.execute(stmt)
+    counts: dict[str, int] = {}
+    first_seen: datetime | None = None
+    for status, cnt, first in result.all():
+        counts[status] = cnt
+        if first is not None and (first_seen is None or first < first_seen):
+            first_seen = first
+    return AuthorStats(
+        total=sum(counts.values()),
+        published=counts.get("published", 0),
+        rejected=counts.get("rejected", 0),
+        pending=counts.get("pending", 0),
+        scheduled=counts.get("scheduled", 0),
+        cancelled=counts.get("cancelled", 0),
+        first_seen=first_seen,
+    )

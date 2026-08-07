@@ -28,3 +28,4 @@ docker-compose.override.yml
 # Тексты правил конкретного канала; в git только config/rules.example.txt
 config/*_rules.txt
 config/rules.txt
+.mypy_cache/

@@ -62,6 +62,11 @@ class ModeratorCB(CallbackData, prefix="mod"):
     user_id: int = 0
 
 
+class AuthorCardCB(CallbackData, prefix="ucard"):
+    action: Literal["ban", "unban", "note", "contact", "cancel"]
+    user_id: int = 0
+
+
 class TagPresetCB(CallbackData, prefix="tpreset"):
     action: Literal[
         "section", "add_section", "edit_section",

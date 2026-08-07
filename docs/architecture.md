@@ -73,6 +73,7 @@ tg-submission-bot/
     │   │   ├── __init__.py    # router + include sub-routers + /cancel
     │   │   ├── _helpers.py    # _delete_tracked_messages(), _send_submission_view(), TERMINAL_STATUSES
     │   │   ├── management.py  # Moderator home screen + global management menu + CRUD for preset sections/entries
+    │   │   ├── author_card.py # Author card actions (note, ban/unban, contact) + /user lookup
     │   │   ├── recover.py     # Card recovery logic for the Recover button
     │   │   ├── review.py      # moderator `/start` + deep link /start review_<id>, handle_close
     │   │   ├── edit.py        # Caption editing (FSM)
@@ -112,7 +113,9 @@ tg-submission-bot/
     │   ├── admin_notifications.py # Sends DM notifications to all is_admin users on preset/section CRUD
     │   ├── topic_notifications.py # In-topic notifications (published, rejected, message from mod)
     │   ├── media_append.py       # Album buffering for media append
-    │   └── submission_intake.py  # Viewer media-group buffering on initial submission
+    │   ├── submission_intake.py  # Viewer media-group buffering on initial submission
+    │   ├── author_card.py        # Pinned author card — the opening message of their forum topic; coalesced render job + reconcile self-heal
+    │   └── dashboard.py          # Pinned General-topic message: stats + legend + commands; own coalesced render job
     │
     ├── filters/
     │   ├── is_moderator.py    # IsModerator: checks event.from_user.id in config.moderator_ids
@@ -171,6 +174,17 @@ dp.include_routers(
 **Order matters:**
 - `moderator` **first** — its `/start` (moderator home screen or `review_*` deep link) and `/cancel` (clearing the preview/management message) are handled before the generic commands in `common`; non-moderator messages pass through thanks to the `IsModerator()` filter on the router
 - `contact` before `viewer` — a viewer's replies to a moderator's message don't create new submissions and don't land in the viewer handler as regular text submissions
+
+---
+
+## Author card and dashboard
+
+Both `services/author_card.py` and `services/dashboard.py` mirror the queue board's render pattern (build text in a read-only transaction → commit → talk to Telegram → record the result), but each keeps its **own** dirty-flag/render-job pair instead of hanging off the queue board's events:
+
+- **Author card** — the **opening message** of the author's forum topic (`user:<id>:card` in `system_messages`), pinned, showing submission stats, ban state and the moderator note. It is created in exactly two places: `create_author_card_message()` when the topic itself is created (`services/topics.ensure_user_topic`, welcome text only as a fallback if that fails), and `scripts/backfill_author_cards.py` for topics that predate the change. `render_author_card()` **only edits in place** and returns silently when no card is registered — otherwise a restart would fire one new message into every existing topic at once. A card whose message is gone cannot be replaced (its slot as the first message is fixed), so the record is dropped and the backfill script restores it. The record's `payload.opening` flag marks a card that is a topic's first message and survives every re-render. `request_author_card(user_id)` marks a user dirty (in-memory, no IO); `author_card_render_job` (every 60s) drains up to 10 dirty cards per pass with a 0.5s delay between edits; `author_card_reconcile_job` (every 10 min) walks `user_topics` in cursor-paginated batches and re-marks authors dirty as a self-heal for a lost in-memory set.
+- **Dashboard** — the single pinned message of the General topic (`general:stats`), carrying three blocks: stats summary (pending/scheduled/dead counts, 7-day published/rejected totals, active edit locks), status legend, and moderator commands. The legend used to be its own pin (`general:legend`); `services/topics.cleanup_legacy_legend_pin()` unpins and deletes that message at startup and drops its row, so the General topic keeps one pin. `request_dashboard()` marks the dashboard dirty; `dashboard_render_job` (every 60s) coalesces any number of dirty flags into at most one render, and force-renders every 5 minutes even if not dirty (self-heal).
+- **Why the separate coalescing:** `editMessageText` in the moderator group is a single shared Telegram quota with the queue board (`services/topics_queue.py`). Hanging the dashboard (or the author card) on the same event stream as the queue board would double that traffic on every submission-status change and risk `TelegramRetryAfter` on bursts. Routing them through their own dirty flags and independent minimal-interval jobs caps the added edit rate regardless of how many events fire in between ticks.
+- Both services are **single-process only** — the dirty sets/flags and render locks are process-local `asyncio` primitives and don't coordinate across multiple bot instances.
 
 ---
 

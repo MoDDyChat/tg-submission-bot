@@ -12,6 +12,8 @@ from db.models import User
 from db.queries import get_submission_with_user, update_submission_status
 from keyboards.callbacks import SubmissionCB
 from services import edit_lock, topic_notifications, topics
+from services.author_card import request_author_card
+from services.dashboard import request_dashboard
 from services.topics_queue import render_queue as _render_queue
 from states.moderator import ModeratorReview
 from utils.html_entities import get_html_text
@@ -92,6 +94,8 @@ async def handle_reject_reason(
     logger.info("Пост #%d отклонён. Причина: %s", sub_id, message.text)
 
     await _render_queue(message.bot, session)
+    request_dashboard()
+    request_author_card(sub.user.id)
 
     # Delete prompt, moderator's reason message, media and action buttons
     try:
@@ -151,6 +155,8 @@ async def handle_reject_silent(
     logger.info("Пост #%d тихо отклонён.", sub_id)
 
     await _render_queue(callback.bot, session)
+    request_dashboard()
+    request_author_card(sub.user.id)
 
     data = await state.get_data()
     await _delete_tracked_messages(callback.bot, callback.message.chat.id, data)

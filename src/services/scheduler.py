@@ -1,11 +1,13 @@
 """APScheduler wrapper: scheduling, cancellation, and recovery on restart."""
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+import core.messages as msg
 from core.config import config
 from core.exceptions import (
     MSBotError,
@@ -14,7 +16,8 @@ from core.exceptions import (
     SubmissionStatusError,
 )
 from core.logging import get_logger
-from db.queries import get_unpublished_publications
+from db.queries import get_unpublished_publications, mark_publication_dead
+from services.admin_notifications import notify_admins
 from services.publisher import publish_post
 
 logger = get_logger(__name__)
@@ -101,7 +104,9 @@ async def recover_scheduled_jobs(
     now = datetime.now(timezone.utc)
     recovered = 0
     immediate = 0
-    skipped = 0
+    # (publication, publish_at normalized to UTC) — kept together so the later
+    # notification doesn't have to re-derive the timezone-normalized instant.
+    dead_candidates: list[tuple] = []
 
     for pub in publications:
         publish_at = pub.publish_at
@@ -116,10 +121,10 @@ async def recover_scheduled_jobs(
             overdue_seconds = (now - publish_at).total_seconds()
             if overdue_seconds > MAX_OVERDUE_SECONDS:
                 logger.warning(
-                    "Публикация #%d просрочена на %.0f ч — пропускаем",
+                    "Публикация #%d просрочена на %.0f ч — помечаем мёртвой",
                     pub.id, overdue_seconds / 3600,
                 )
-                skipped += 1
+                dead_candidates.append((pub, publish_at))
                 continue
 
             # Missed while bot was down — publish immediately
@@ -142,9 +147,35 @@ async def recover_scheduled_jobs(
             )
             recovered += 1
 
+    newly_dead: list[tuple] = []
+    if dead_candidates:
+        async with session_factory() as session:
+            for pub, publish_at in dead_candidates:
+                if await mark_publication_dead(session, pub.id):
+                    newly_dead.append((pub, publish_at))
+            await session.commit()
+
+    if newly_dead:
+        tz = ZoneInfo(config.timezone)
+        item_lines = "\n".join(
+            msg.ADMIN_NOTIFY_DEAD_PUBLICATION_ITEM.format(
+                sub_id=pub.submission_id,
+                when=publish_at.astimezone(tz).strftime("%d.%m.%Y %H:%M"),
+            )
+            for pub, publish_at in newly_dead
+        )
+        async with session_factory() as session:
+            await notify_admins(
+                bot, session,
+                actor=None,
+                action_text=msg.ADMIN_NOTIFY_DEAD_PUBLICATIONS.format(
+                    count=len(newly_dead), items=item_lines,
+                ),
+            )
+
     logger.info(
-        "Восстановлено %d job, перепланировано %d просроченных (t+1с), пропущено %d старше 24ч",
-        recovered, immediate, skipped,
+        "Восстановлено %d job, перепланировано %d просроченных (t+1с), помечено мёртвыми %d",
+        recovered, immediate, len(dead_candidates),
     )
 
 

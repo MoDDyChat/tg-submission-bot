@@ -98,6 +98,33 @@ def _current_revisions(sync_connection) -> set[str]:
     return set(MigrationContext.configure(sync_connection).get_current_heads())
 
 
+# Ревизии 0003/0004 изначально были созданы с автогенерированными hex-id и
+# позже переименованы под общий формат NNNN_slug. В уже проинициализированных
+# БД alembic_version хранит старый id, которого больше нет в versions/ — Alembic
+# на старте упал бы с "Can't locate revision". Шим переписывает его на месте;
+# после того как все инстансы обновятся, его можно удалить.
+_RENAMED_REVISIONS = {
+    "f736150e6fa0": "0003_moderator_invites",
+    "b7c1d2e3f4a5": "0004_group_observability",
+}
+
+
+async def _rename_legacy_revisions(conn) -> None:
+    """Rewrite pre-rename revision ids in ``alembic_version`` (idempotent)."""
+    exists = await conn.scalar(text("SELECT to_regclass('alembic_version')"))
+    if exists is None:
+        return
+
+    for old, new in _RENAMED_REVISIONS.items():
+        result = await conn.execute(
+            text("UPDATE alembic_version SET version_num = :new WHERE version_num = :old"),
+            {"new": new, "old": old},
+        )
+        if result.rowcount:
+            logger.warning("alembic_version: ревизия %s переименована в %s", old, new)
+    await conn.commit()
+
+
 def _upgrade(cfg: AlembicConfig) -> None:
     """Sync upgrade run in a worker thread: env.py does its own asyncio.run()."""
     command.upgrade(cfg, "head")
@@ -122,6 +149,7 @@ async def run_migrations() -> None:
     migration_engine = create_async_engine(config.db.url, poolclass=NullPool)
     try:
         async with migration_engine.connect() as conn:
+            await _rename_legacy_revisions(conn)
             current = await conn.run_sync(_current_revisions)
             if current == heads:
                 logger.info(

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import select
 
-from db.models import TagPresetSection, User
+from db.models import Submission, TagPresetSection, User
 from db.queries import (
     add_media,
     ban_user,
@@ -18,6 +18,7 @@ from db.queries import (
     delete_tag_preset_section,
     find_tag_preset_conflicts,
     get_active_submissions,
+    get_author_stats,
     get_banned_users,
     get_or_create_user,
     get_publication,
@@ -29,9 +30,11 @@ from db.queries import (
     get_tag_preset_section,
     get_tag_preset_section_by_label,
     get_unpublished_publications,
+    get_users_by_username,
     list_tag_preset_sections,
     list_tag_presets,
     list_tag_presets_grouped,
+    mark_publication_dead,
     mark_published,
     unban_user,
     update_publication_time,
@@ -78,6 +81,34 @@ async def test_get_or_create_user_upserts_existing_row(db_session) -> None:
     assert refreshed is not None
     assert refreshed.username == "second"
     assert refreshed.full_name == "Second Name"
+
+
+@pytest.mark.asyncio
+async def test_get_users_by_username_flags_duplicate_as_ambiguous(db_session) -> None:
+    """A Telegram handle can be released and re-registered by someone else,
+    leaving two rows with the same username. Nothing in the row (including
+    ``updated_at``, which changes for unrelated reasons like bans or notes)
+    identifies the current holder, so the query must surface both rows
+    instead of picking one and silently guessing wrong."""
+    old_owner, _ = await get_or_create_user(db_session, 333, "reused_nick", "Old Owner")
+    await db_session.commit()
+
+    new_owner, _ = await get_or_create_user(db_session, 334, "reused_nick", "New Owner")
+    await db_session.commit()
+
+    found = await get_users_by_username(db_session, "reused_nick")
+
+    assert {user.id for user in found} == {old_owner.id, new_owner.id}
+
+
+@pytest.mark.asyncio
+async def test_get_users_by_username_returns_single_match(db_session) -> None:
+    user, _ = await get_or_create_user(db_session, 335, "solo_nick", "Solo Owner")
+    await db_session.commit()
+
+    found = await get_users_by_username(db_session, "solo_nick")
+
+    assert [item.id for item in found] == [user.id]
 
 
 @pytest.mark.asyncio
@@ -234,3 +265,111 @@ async def test_create_message_persists_conversation_entry(db_session) -> None:
     assert message.submission_id == submission.id
     assert message.sender_telegram_id == 666
     assert message.text == "Reply text"
+
+
+@pytest.mark.asyncio
+async def test_get_author_stats_counts_statuses_and_first_seen(db_session) -> None:
+    user, _ = await get_or_create_user(db_session, 777, "author", "Author")
+    statuses = ("pending", "published", "published", "rejected", "scheduled", "cancelled")
+    for status in statuses:
+        submission = await create_submission(db_session, user.id, status)
+        if status != "pending":
+            await update_submission_status(db_session, submission.id, status)
+    await db_session.commit()
+
+    stats = await get_author_stats(db_session, user.id)
+    created_times = (
+        await db_session.execute(
+            select(Submission.created_at).where(Submission.user_id == user.id)
+        )
+    ).scalars().all()
+
+    assert stats.total == len(statuses)
+    assert stats.pending == 1
+    assert stats.published == 2
+    assert stats.rejected == 1
+    assert stats.scheduled == 1
+    assert stats.cancelled == 1
+    assert stats.first_seen == min(created_times)
+
+
+@pytest.mark.asyncio
+async def test_get_author_stats_empty_author(db_session) -> None:
+    user, _ = await get_or_create_user(db_session, 778, "lone", "Lone")
+    await db_session.commit()
+
+    stats = await get_author_stats(db_session, user.id)
+
+    assert stats.total == 0
+    assert stats.published == 0
+    assert stats.rejected == 0
+    assert stats.pending == 0
+    assert stats.scheduled == 0
+    assert stats.cancelled == 0
+    assert stats.first_seen is None
+
+
+@pytest.mark.asyncio
+async def test_mark_publication_dead_is_idempotent(db_session) -> None:
+    user, _ = await get_or_create_user(db_session, 779, "author", "Author")
+    submission = await create_submission(db_session, user.id, "Scheduled")
+    await update_submission_status(db_session, submission.id, "scheduled")
+    publication = await create_publication(
+        db_session,
+        submission.id,
+        "Edited",
+        datetime.now(timezone.utc) - timedelta(hours=25),
+    )
+    await db_session.commit()
+
+    assert await mark_publication_dead(db_session, publication.id) is True
+    assert await mark_publication_dead(db_session, publication.id) is False
+    await db_session.commit()
+
+    refreshed = await get_publication(db_session, publication.id)
+    assert refreshed.dead_at is not None
+
+
+@pytest.mark.asyncio
+async def test_update_publication_time_revives_dead_publication(db_session) -> None:
+    user, _ = await get_or_create_user(db_session, 780, "author", "Author")
+    submission = await create_submission(db_session, user.id, "Scheduled")
+    await update_submission_status(db_session, submission.id, "scheduled")
+    publication = await create_publication(
+        db_session,
+        submission.id,
+        "Edited",
+        datetime.now(timezone.utc) + timedelta(hours=25),
+    )
+    await db_session.commit()
+
+    await mark_publication_dead(db_session, publication.id)
+    await db_session.commit()
+    assert (await get_publication(db_session, publication.id)).dead_at is not None
+
+    new_publish_at = datetime.now(timezone.utc) + timedelta(hours=2)
+    await update_publication_time(db_session, publication.id, new_publish_at)
+    await db_session.commit()
+
+    refreshed = await get_publication(db_session, publication.id)
+    assert refreshed.dead_at is None
+    assert refreshed.publish_at == new_publish_at
+
+
+@pytest.mark.asyncio
+async def test_create_direct_message_without_submission(db_session) -> None:
+    viewer, _ = await get_or_create_user(db_session, 781, "viewer", "Viewer")
+    message = await create_message(
+        db_session,
+        None,
+        999,
+        "Direct text",
+        target_user_id=viewer.id,
+    )
+    await db_session.commit()
+
+    assert message.id is not None
+    assert message.submission_id is None
+    assert message.target_user_id == viewer.id
+    assert message.sender_telegram_id == 999
+    assert message.text == "Direct text"

@@ -148,6 +148,24 @@ async def test_notify_admins_swallows_telegram_error() -> None:
     assert bot.send_message.await_count == 2
 
 
+# ── actor=None — system-originated notifications ─────────────────
+
+async def test_notify_admins_with_no_actor_sends_to_all_admins() -> None:
+    """A bot-originated notification (no moderator actor) must not exclude anyone."""
+    bot = AsyncMock()
+    session = AsyncMock()
+
+    admins = [_make_admin(10, "admin1"), _make_admin(11, "admin2")]
+    with patch.object(admin_notifications, "get_admin_users", AsyncMock(return_value=admins)):
+        await admin_notifications.notify_admins(
+            bot, session, actor=None, action_text="system action"
+        )
+
+    assert bot.send_message.await_count == 2
+    sent_ids = {call.kwargs["chat_id"] for call in bot.send_message.call_args_list}
+    assert sent_ids == {10, 11}
+
+
 # ── empty admin list — no sends ───────────────────────────────────
 
 async def test_notify_admins_no_admins_no_calls() -> None:

@@ -17,6 +17,17 @@
 
 ---
 
+## Dead publications
+
+`recover_scheduled_jobs` (called once on every bot startup) is also where an overdue publication gets marked **dead** instead of recovered:
+
+- For each unpublished publication with `publish_at <= now`, if the overdue time exceeds 24 hours, no APScheduler job is (re)created — the bot instead calls `mark_publication_dead(session, pub.id)`, which does `UPDATE publications SET dead_at = now() WHERE id = :id AND dead_at IS NULL`.
+- The `dead_at IS NULL` guard makes the UPDATE idempotent and its result (`rowcount > 0`) tells the caller whether this call was the one that *first* marked it dead. Only newly-marked publications are collected into the admin DM (`ADMIN_NOTIFY_DEAD_PUBLICATIONS`, one message listing all of them) — so a publication that was already dead from a previous restart never re-notifies admins.
+- `dead_at IS NULL` means alive; a non-NULL `dead_at` means the publication was overdue by more than 24h with no job scheduled for it. `services/dashboard.py` counts dead publications separately from the `scheduled` bucket (`scheduled - dead`), and `topics_queue._build_schedule_lines` pulls dead publications out of the normal day-block layout into a dedicated block at the top of the schedule post (`SCHEDULE_DEAD_HEADER` + one `SCHEDULE_DEAD_LINE` per item), since they carry their own overdue date rather than an upcoming one.
+- **Recovering a dead publication:** rescheduling it through the normal **Изменить время** (Change time) flow calls `update_publication_time`, which sets a new `publish_at` **and** resets `dead_at` back to `NULL` in the same UPDATE — the publication becomes a normal scheduled job again and disappears from the dead block on the next schedule render.
+
+---
+
 ## Publishing (publisher.py)
 
 1. **Idempotency:** checks `published_at` — if already published, skips

@@ -4,7 +4,16 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from db.models import TagPresetEntry
 from db.models import TagPresetSection
 from db.models import User
-from keyboards.callbacks import ConfirmCB, ManagementCB, MediaCB, ModeratorCB, SubmissionCB, TagPresetCB, UnbanCB
+from keyboards.callbacks import (
+    AuthorCardCB,
+    ConfirmCB,
+    ManagementCB,
+    MediaCB,
+    ModeratorCB,
+    SubmissionCB,
+    TagPresetCB,
+    UnbanCB,
+)
 
 
 def submission_actions_kb(sub_id: int, status: str = "pending") -> InlineKeyboardMarkup:
@@ -167,6 +176,38 @@ def moderator_card_kb(
         callback_data=ModeratorCB(action="list").pack(),
     )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def author_card_kb(user: User) -> InlineKeyboardMarkup:
+    """Buttons for the author card: ban/unban, note, contact."""
+    rows: list[list[InlineKeyboardButton]] = []
+    if not (user.is_moderator or user.is_admin):
+        ban_text = msg.AUTHOR_CARD_BTN_UNBAN if user.is_banned else msg.AUTHOR_CARD_BTN_BAN
+        ban_action = "unban" if user.is_banned else "ban"
+        rows.append([InlineKeyboardButton(
+            text=ban_text,
+            callback_data=AuthorCardCB(action=ban_action, user_id=user.id).pack(),
+        )])
+    rows.append([
+        InlineKeyboardButton(
+            text=msg.AUTHOR_CARD_BTN_NOTE,
+            callback_data=AuthorCardCB(action="note", user_id=user.id).pack(),
+        ),
+        InlineKeyboardButton(
+            text=msg.AUTHOR_CARD_BTN_CONTACT,
+            callback_data=AuthorCardCB(action="contact", user_id=user.id).pack(),
+        ),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def author_card_cancel_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=msg.AUTHOR_CARD_BTN_CANCEL,
+            callback_data=AuthorCardCB(action="cancel", user_id=user_id).pack(),
+        )],
+    ])
 
 
 def moderator_remove_confirm_kb(user_id: int) -> InlineKeyboardMarkup:
