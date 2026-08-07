@@ -285,9 +285,7 @@ TOPIC_LEGEND_DESCRIPTIONS:
   rejected: последний пост отклонён
   cancelled: последний пост отменён автором
 TOPIC_NAV_LEGEND_TEMPLATE: |
-  <b>Легенда</b>
-
-  <b>Статусы тем (иконка — цвет темы):</b>
+  <b>Статусы тем:</b>
   {status_lines}
 
   <b>Полезные команды модератора:</b>

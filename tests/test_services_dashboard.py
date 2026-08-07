@@ -64,7 +64,6 @@ def _patch_counters(
     status_counts: dict | None = None,
     dead: list | None = None,
     published_7d: int = 0,
-    rejected_7d: int = 0,
     user=None,
 ) -> None:
     monkeypatch.setattr(
@@ -74,7 +73,6 @@ def _patch_counters(
     monkeypatch.setattr(
         dashboard, "count_recent_publications", AsyncMock(return_value=published_7d)
     )
-    monkeypatch.setattr(dashboard, "count_recent_rejections", AsyncMock(return_value=rejected_7d))
     monkeypatch.setattr(dashboard, "get_user_by_id", AsyncMock(return_value=user))
 
 
@@ -91,10 +89,9 @@ async def test_dashboard_text_has_correct_counters_and_empty_locks(monkeypatch) 
 
     _patch_counters(
         monkeypatch,
-        status_counts={"pending": 3, "scheduled": 6},
+        status_counts={"pending": 3, "scheduled": 6, "published": 9, "rejected": 2},
         dead=[MagicMock(), MagicMock()],
         published_7d=7,
-        rejected_7d=9,
     )
 
     text = await dashboard._build_dashboard_text(session)
@@ -103,7 +100,8 @@ async def test_dashboard_text_has_correct_counters_and_empty_locks(monkeypatch) 
     assert "<b>4</b>" in text  # scheduled = 6 - 2 dead
     assert "<b>2</b>" in text  # dead
     assert "7" in text  # published_7d
-    assert "9" in text  # rejected_7d
+    assert "<b>20</b>" in text  # total submitted = 3 + 6 + 9 + 2
+    assert "<b>9</b>" in text  # total published
     assert "Сейчас никто ничего не редактирует" in text
 
 

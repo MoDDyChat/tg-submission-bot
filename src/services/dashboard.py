@@ -38,7 +38,6 @@ from core.topic_status_config import build_topic_nav_legend
 from db.models import EditLock
 from db.queries import (
     count_recent_publications,
-    count_recent_rejections,
     count_submissions_by_status,
     get_system_message,
     get_user_by_id,
@@ -96,10 +95,13 @@ async def _build_dashboard_text(session: AsyncSession, legend: str = "") -> str:
     dead = len(await list_dead_publications(session))
     pending = status_counts.get("pending", 0)
     scheduled = status_counts.get("scheduled", 0) - dead
+    # Submissions are never deleted (only cascade with their author), so the
+    # per-status counts double as all-time totals.
+    total_submitted = sum(status_counts.values())
+    total_published = status_counts.get("published", 0)
 
     since = datetime.now(timezone.utc) - timedelta(days=7)
     published_7d = await count_recent_publications(session, since)
-    rejected_7d = await count_recent_rejections(session, since)
 
     locks_block = await _build_locks_block(session)
 
@@ -108,7 +110,8 @@ async def _build_dashboard_text(session: AsyncSession, legend: str = "") -> str:
         scheduled=scheduled,
         dead=dead,
         published_7d=published_7d,
-        rejected_7d=rejected_7d,
+        total_submitted=total_submitted,
+        total_published=total_published,
         locks_block=locks_block,
     )
     return f"{stats}\n\n{legend}" if legend else stats

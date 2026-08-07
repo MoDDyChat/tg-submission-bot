@@ -192,7 +192,7 @@ _DEFAULTS: dict[str, str | dict[str, str]] = {
     'CAPTION_TOO_LONG': 'Описание слишком длинное. Максимум — 1024 символа для медиапоста (без учёта тегов).',
     'MEDIA_GROUP_EXTRA_CAPTIONS_WARNING': '⚠️ Обратите внимание: описание принято только с первого файла альбома. Подписи к остальным файлам ({count} шт.) проигнорированы — Telegram не поддерживает отдельные подписи для каждого файла в альбоме.',
     'TOPIC_LEGEND_DESCRIPTIONS': {'pending': 'пост ждёт модерации', 'editing': 'модератор редактирует прямо сейчас', 'scheduled': 'запланировано', 'published': 'опубликовано', 'rejected': 'последний пост отклонён', 'cancelled': 'последний пост отменён автором'},
-    'TOPIC_NAV_LEGEND_TEMPLATE': '<b>Легенда</b>\n\n<b>Статусы тем (иконка — цвет темы):</b>\n{status_lines}\n\n<b>Полезные команды модератора:</b>\n• Редактирование пресетов тегов — {panel_link} → «Управление» → «Пресеты тегов»\n• Разбан пользователей — {panel_link} → «Управление» → «Заблокированные»\n',
+    'TOPIC_NAV_LEGEND_TEMPLATE': '<b>Статусы тем:</b>\n{status_lines}\n\n<b>Полезные команды модератора:</b>\n• Редактирование пресетов тегов — {panel_link} → «Управление» → «Пресеты тегов»\n• Разбан пользователей — {panel_link} → «Управление» → «Заблокированные»\n',
     'TOPIC_NAV_PANEL_LINK': '<a href="https://t.me/{bot_username}?start=panel">панель модератора</a>',
     'LEGEND_MOVED_NOTICE': 'ℹ️ Легенда статусов переехала в закреплённую сводку предложки.',
     'TOPIC_NAV_PANEL_PLAIN': 'панель модератора (DM боту → /start)',
@@ -298,7 +298,7 @@ _DEFAULTS: dict[str, str | dict[str, str]] = {
     'USER_LOOKUP_AMBIGUOUS': 'Найдено несколько пользователей с таким ником — Telegram позволяет менять username, и старая запись могла остаться в базе. Укажи числовой Telegram ID (<code>/user &lt;telegram_id&gt;</code>).',
     'USER_LOOKUP_NO_TOPIC': 'У автора ещё нет темы в группе (не присылал заявок).',
     # ── Dashboard ─────────────────────────────────────────────────────
-    'DASHBOARD_TEXT': '📊 <b>Сводка предложки</b>\n\n🕓 В очереди: <b>{pending}</b>\n🗓 Запланировано: <b>{scheduled}</b>\n⛔️ Мертво: <b>{dead}</b>\n✅ Опубликовано за 7 дней: {published_7d}\n❌ Отклонено за 7 дней: {rejected_7d}\n\n{locks_block}',
+    'DASHBOARD_TEXT': '📊 <b>Сводка предложки</b>\n\n📥 Всего предложено: <b>{total_submitted}</b>\n📤 Всего опубликовано: <b>{total_published}</b>\n\n🕓 В очереди: <b>{pending}</b>\n🗓 Запланировано: <b>{scheduled}</b>\n⛔️ Мертво: <b>{dead}</b>\n✅ Опубликовано за 7 дней: {published_7d}\n\n{locks_block}',
     'DASHBOARD_LOCKS_HEADER': '✏️ <b>Сейчас в работе:</b>',
     'DASHBOARD_LOCK_SUBMISSION': '• {mod} → пост #{sub_id}',
     'DASHBOARD_LOCK_MANAGEMENT': '• {mod} → раздел «{section}»',
