@@ -355,6 +355,49 @@ async def test_handle_custom_finish_updates_tags_and_refreshes_preview(monkeypat
     callback.answer.assert_awaited_once_with(msg.TAGS_UPDATED)
 
 
+async def test_handle_custom_finish_unchanged_tags_skip_notification(monkeypatch) -> None:
+    """Same tag set as before: no DB write, no topic notification, no repaint."""
+    sections, grouped = _wizard_data()
+    session = AsyncMock()
+    state = FakeState({
+        "sub_id": 5,
+        "wizard_sections": {"category": ["MineShieldArt"], "character": []},
+        "wizard_custom": ["Custom"],
+        "wizard_page_index": 0,
+    })
+    sub = make_submission(
+        sub_id=5, status="pending", caption="Описание", media=[],
+        tags=["MineShieldArt", "Custom"],
+    )
+    callback = make_callback(message=make_message())
+    db_user = make_user()
+    update_tags = AsyncMock()
+    send_view = AsyncMock(return_value=True)
+    notify = AsyncMock()
+    update_card = AsyncMock()
+    title_sync = AsyncMock()
+
+    monkeypatch.setattr(tag_wizard, "_load_presets", AsyncMock(return_value=(sections, grouped)))
+    monkeypatch.setattr(tag_wizard, "get_submission_with_user", AsyncMock(side_effect=[sub, sub]))
+    monkeypatch.setattr(tag_wizard, "update_submission_tags", update_tags)
+    monkeypatch.setattr(tag_wizard.edit_lock, "extend_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(tag_wizard.topic_notifications, "notify_tags_changed", notify)
+    monkeypatch.setattr(tag_wizard.topics, "update_submission_card", update_card)
+    monkeypatch.setattr(tag_wizard.topics, "request_topic_title_sync", title_sync)
+    monkeypatch.setattr(moderator_helpers, "_send_submission_view", send_view)
+
+    await tag_wizard.handle_custom_finish(callback, session, state, db_user)
+
+    update_tags.assert_not_awaited()
+    notify.assert_not_awaited()
+    update_card.assert_not_awaited()
+    title_sync.assert_not_awaited()
+    send_view.assert_awaited_once()
+    # The lock extension is a write — it must still be committed before Telegram calls
+    session.commit.assert_awaited()
+    callback.answer.assert_awaited_once_with(msg.TAGS_UPDATED)
+
+
 # ---------------------------------------------------------------------------
 # Lock-guard tests for tag_wizard callbacks
 # ---------------------------------------------------------------------------

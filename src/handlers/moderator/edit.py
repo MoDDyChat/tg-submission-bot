@@ -113,10 +113,17 @@ async def handle_edit_caption_text(
         return
 
     old_caption = sub.caption
-    await update_submission_caption(session, sub_id, new_caption)
-    sub.caption = new_caption
+    changed = (old_caption or "") != (new_caption or "")
+    if changed:
+        await update_submission_caption(session, sub_id, new_caption)
+        sub.caption = new_caption
+        logger.info("Описание поста #%d изменено модератором", sub_id)
+    else:
+        logger.info("Описание поста #%d не изменилось — уведомление пропущено", sub_id)
 
-    logger.info("Описание поста #%d изменено модератором", sub_id)
+    # Commit unconditionally: the lock extension above is a write too, and the
+    # transaction must be closed before the Telegram calls below.
+    await session.commit()
 
     if prompt_id := data.get("prompt_message_id"):
         try:
@@ -137,8 +144,9 @@ async def handle_edit_caption_text(
         pass
 
     await _send_submission_view(message, session, sub_id, state)
-    await topic_notifications.notify_caption_changed(
-        message.bot, session, sub, db_user, old_caption, new_caption
-    )
-    await topics.update_submission_card(message.bot, session, sub)
-    await topics.request_topic_title_sync(session, sub.user.id)
+    if changed:
+        await topic_notifications.notify_caption_changed(
+            message.bot, session, sub, db_user, old_caption, new_caption
+        )
+        await topics.update_submission_card(message.bot, session, sub)
+        await topics.request_topic_title_sync(session, sub.user.id)

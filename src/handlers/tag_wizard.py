@@ -513,10 +513,17 @@ async def handle_custom_finish(
         )
         return
 
-    await update_submission_tags(session, sub_id, final_tags)
+    tags_changed = old_tags != list(final_tags)
+    if tags_changed:
+        await update_submission_tags(session, sub_id, final_tags)
+    # Commit unconditionally: the lock extension above is a write too, and the
+    # transaction must be closed before the Telegram calls below.
     await session.commit()
 
-    logger.info("Теги поста #%d обновлены: %s", sub_id, final_tags)
+    if tags_changed:
+        logger.info("Теги поста #%d обновлены: %s", sub_id, final_tags)
+    else:
+        logger.info("Теги поста #%d не изменились — уведомление пропущено", sub_id)
 
     try:
         try:
@@ -529,11 +536,12 @@ async def handle_custom_finish(
         sub = await get_submission_with_user(session, sub_id)
         if sub:
             await _send_submission_view(callback.message, session, sub_id, state)
-            await topic_notifications.notify_tags_changed(
-                callback.bot, session, sub, db_user, old_tags, final_tags
-            )
-            await topics.update_submission_card(callback.bot, session, sub)
-            await topics.request_topic_title_sync(session, sub.user.id)
+            if tags_changed:
+                await topic_notifications.notify_tags_changed(
+                    callback.bot, session, sub, db_user, old_tags, final_tags
+                )
+                await topics.update_submission_card(callback.bot, session, sub)
+                await topics.request_topic_title_sync(session, sub.user.id)
         else:
             await state.clear()
             await callback.answer(msg.SOMETHING_WENT_WRONG, show_alert=True)

@@ -85,6 +85,14 @@ A private Telegram group with forum support enabled (`MODERATOR_GROUP_ID`), wher
 
 After editing the description: the prompt and the moderator's reply are deleted, the media is redrawn with the updated text. After the tags wizard: the wizard message is deleted, the preview is redrawn. After the media manager: if the composition changed, the card in the topic is recreated; otherwise the preview is simply shown again.
 
+**No-op edits are silent.** Every edit path compares before/after and skips the DB write, the topic notification, `update_submission_card` and `request_topic_title_sync` when nothing actually changed — the moderator still gets the usual preview back:
+- description (`handlers/moderator/edit.py`) — the new caption equals the stored one (empty and `None` are the same value);
+- tags (`handlers/tag_wizard.py`) — the assembled tag list equals the stored one, order included (reordering counts as a change);
+- media (`handlers/moderator/media.py`) — the `media_sig_open` signature is unchanged;
+- publication time (`handlers/moderator/schedule.py`) — a reschedule lands on the exact same `publish_at`; the APScheduler job is still replaced (idempotent). Scheduling after **Снять с расписания** (Unschedule) always notifies, since the publication row was deleted.
+
+The lock extension at the start of each handler is a write, so `session.commit()` still runs on the no-op path — the transaction must be closed before the Telegram calls that follow.
+
 `/cancel` in the `editing_media` / `adding_media` state (category `"sub"`): cancels pending additions (calls `cancel_append_for_sub`), extends the lock, deletes sub-state messages, returns to `viewing_post` without releasing the lock. Media already recorded in the DB stays; an incomplete album is cancelled.
 
 ### Moderator FSM states (ModeratorReview)

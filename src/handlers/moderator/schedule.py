@@ -374,6 +374,7 @@ async def handle_confirm_yes(
     # Reschedule or create publication
     existing_pub = await get_publication_by_submission(session, sub_id)
     is_reschedule = existing_pub is not None
+    time_unchanged = is_reschedule and existing_pub.publish_at == publish_at_utc
     if existing_pub:
         cancel_scheduled(existing_pub.id)  # Cancel old job before DB update to eliminate race window
         await update_publication_time(session, existing_pub.id, publish_at_utc)
@@ -391,7 +392,9 @@ async def handle_confirm_yes(
         submission_id=sub.id, edited_caption=sub.caption,
     )
 
-    if is_reschedule:
+    if time_unchanged:
+        logger.info("Время публикации поста #%d не изменилось — уведомление пропущено", sub_id)
+    elif is_reschedule:
         await topic_notifications.notify_rescheduled(callback.bot, session, sub, db_user, publish_at_utc)
     else:
         await topic_notifications.notify_scheduled(callback.bot, session, sub, db_user, publish_at_utc)

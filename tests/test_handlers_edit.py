@@ -132,6 +132,81 @@ async def test_edit_caption_text_updates_caption(monkeypatch) -> None:
     send_view.assert_awaited_once()
 
 
+async def test_edit_caption_text_unchanged_skips_notification(monkeypatch) -> None:
+    """Same caption resubmitted: no DB write, no topic notification, no repaint."""
+    session = AsyncMock()
+    state = FakeState({"sub_id": 4})
+    db_user = make_user()
+    message = make_message(text="Same caption")
+    sub = make_submission(sub_id=4, status="pending", caption="Same caption", tags=[])
+    update_caption = AsyncMock()
+    send_view = AsyncMock(return_value=True)
+    notify = AsyncMock()
+    update_card = AsyncMock()
+    title_sync = AsyncMock()
+
+    monkeypatch.setattr(edit.edit_lock, "extend_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(edit, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(edit, "update_submission_caption", update_caption)
+    monkeypatch.setattr(edit, "_send_submission_view", send_view)
+    monkeypatch.setattr(edit.topic_notifications, "notify_caption_changed", notify)
+    monkeypatch.setattr(edit.topics, "update_submission_card", update_card)
+    monkeypatch.setattr(edit.topics, "request_topic_title_sync", title_sync)
+
+    await edit.handle_edit_caption_text(message, session, state, db_user)
+
+    update_caption.assert_not_awaited()
+    notify.assert_not_awaited()
+    update_card.assert_not_awaited()
+    title_sync.assert_not_awaited()
+    send_view.assert_awaited_once()
+
+
+async def test_edit_caption_text_empty_to_empty_skips_notification(monkeypatch) -> None:
+    """An empty caption replaced by an empty one counts as unchanged."""
+    session = AsyncMock()
+    state = FakeState({"sub_id": 4})
+    db_user = make_user()
+    message = make_message(text="")
+    sub = make_submission(sub_id=4, status="pending", caption=None, tags=[])
+    notify = AsyncMock()
+
+    monkeypatch.setattr(edit.edit_lock, "extend_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(edit, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(edit, "update_submission_caption", AsyncMock())
+    monkeypatch.setattr(edit, "_send_submission_view", AsyncMock(return_value=True))
+    monkeypatch.setattr(edit.topic_notifications, "notify_caption_changed", notify)
+    monkeypatch.setattr(edit.topics, "update_submission_card", AsyncMock())
+    monkeypatch.setattr(edit.topics, "request_topic_title_sync", AsyncMock())
+
+    await edit.handle_edit_caption_text(message, session, state, db_user)
+
+    notify.assert_not_awaited()
+
+
+async def test_edit_caption_text_changed_sends_notification(monkeypatch) -> None:
+    session = AsyncMock()
+    state = FakeState({"sub_id": 4})
+    db_user = make_user()
+    message = make_message(text="New caption")
+    sub = make_submission(sub_id=4, status="pending", caption="Old caption", tags=[])
+    notify = AsyncMock()
+
+    monkeypatch.setattr(edit.edit_lock, "extend_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(edit, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(edit, "update_submission_caption", AsyncMock())
+    monkeypatch.setattr(edit, "_send_submission_view", AsyncMock(return_value=True))
+    monkeypatch.setattr(edit.topic_notifications, "notify_caption_changed", notify)
+    monkeypatch.setattr(edit.topics, "update_submission_card", AsyncMock())
+    monkeypatch.setattr(edit.topics, "request_topic_title_sync", AsyncMock())
+
+    await edit.handle_edit_caption_text(message, session, state, db_user)
+
+    notify.assert_awaited_once()
+    assert notify.await_args.args[4] == "Old caption"
+    assert notify.await_args.args[5] == "New caption"
+
+
 async def test_edit_caption_text_rejects_too_long(monkeypatch) -> None:
     session = AsyncMock()
     state = FakeState({"sub_id": 4})

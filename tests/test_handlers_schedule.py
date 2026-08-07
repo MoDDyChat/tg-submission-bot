@@ -56,6 +56,66 @@ async def test_schedule_confirm_calls_render_schedule(monkeypatch) -> None:
     assert state.state == ModeratorReview.viewing_post
 
 
+async def _run_confirm_with_existing_pub(monkeypatch, pub) -> tuple[AsyncMock, AsyncMock]:
+    """Run handle_confirm_yes for a reschedule onto 15.01.2027 12:00 local."""
+    session = AsyncMock()
+    user = make_user()
+    sub = make_submission(sub_id=6, status="scheduled", caption="Test", tags=["Art"])
+    callback = make_callback()
+    state = FakeState({
+        "sub_id": 6,
+        "pub_year": 2027,
+        "pub_month": 1,
+        "pub_day": 15,
+        "pub_hour": 12,
+        "pub_minute": 0,
+        "actions_message_id": 10,
+        "media_message_ids": [],
+    })
+
+    notify_scheduled = AsyncMock()
+    notify_rescheduled = AsyncMock()
+
+    monkeypatch.setattr(schedule, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(schedule.edit_lock, "extend_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(schedule, "get_publication_by_submission", AsyncMock(return_value=pub))
+    monkeypatch.setattr(schedule, "create_publication", AsyncMock(return_value=pub))
+    monkeypatch.setattr(schedule, "update_submission_status", AsyncMock())
+    monkeypatch.setattr(schedule, "update_publication_time", AsyncMock())
+    monkeypatch.setattr(schedule, "cancel_scheduled", AsyncMock())
+    monkeypatch.setattr(schedule, "schedule_post", AsyncMock())
+    monkeypatch.setattr(schedule.topic_notifications, "notify_scheduled", notify_scheduled)
+    monkeypatch.setattr(schedule.topic_notifications, "notify_rescheduled", notify_rescheduled)
+    monkeypatch.setattr(schedule.topics, "update_submission_card", AsyncMock())
+    monkeypatch.setattr(schedule.topics, "request_topic_title_sync", AsyncMock())
+    monkeypatch.setattr(schedule, "_render_queue", AsyncMock())
+    monkeypatch.setattr(schedule, "_render_schedule", AsyncMock())
+
+    await schedule.handle_confirm_yes(callback, session, state, user)
+    return notify_scheduled, notify_rescheduled
+
+
+async def test_schedule_confirm_same_time_skips_notification(monkeypatch) -> None:
+    """Rescheduling onto the very same slot sends no notification."""
+    same_time = datetime(2027, 1, 15, 12, 0, tzinfo=ZoneInfo(config.timezone))
+    pub = make_publication(pub_id=2, submission_id=6, publish_at=same_time)
+
+    notify_scheduled, notify_rescheduled = await _run_confirm_with_existing_pub(monkeypatch, pub)
+
+    notify_rescheduled.assert_not_awaited()
+    notify_scheduled.assert_not_awaited()
+
+
+async def test_schedule_confirm_new_time_notifies_reschedule(monkeypatch) -> None:
+    other_time = datetime(2027, 1, 15, 18, 0, tzinfo=ZoneInfo(config.timezone))
+    pub = make_publication(pub_id=2, submission_id=6, publish_at=other_time)
+
+    notify_scheduled, notify_rescheduled = await _run_confirm_with_existing_pub(monkeypatch, pub)
+
+    notify_rescheduled.assert_awaited_once()
+    notify_scheduled.assert_not_awaited()
+
+
 async def test_calendar_day_shows_busy_block_and_marks_hour(monkeypatch) -> None:
     session = AsyncMock()
     user = make_user()
