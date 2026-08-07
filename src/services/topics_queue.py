@@ -36,6 +36,7 @@ from db.queries import (
     list_system_messages_by_prefix,
     upsert_system_message,
 )
+from utils.formatting import format_author_name
 
 logger = get_logger(__name__)
 
@@ -121,7 +122,11 @@ async def _build_queue_lines(session: AsyncSession) -> list[str]:
 
     lines: list[str] = []
     for i, sub in enumerate(submissions, start=1):
-        raw_author = sub.user.full_name if sub.user else f"user:{sub.user_id}"
+        raw_author = (
+            format_author_name(sub.user.full_name, sub.user.username)
+            if sub.user
+            else f"user:{sub.user_id}"
+        )
         author = html.escape(raw_author)
         if sub.created_at:
             local_date = sub.created_at.astimezone(tz).strftime("%d.%m.%Y")
@@ -330,7 +335,11 @@ async def _build_schedule_lines(session: AsyncSession) -> list[str]:
     for pub in publications:
         sub = pub.submission
         local_dt = pub.publish_at.astimezone(tz)
-        raw_author = sub.user.full_name if sub.user else f"user:{sub.user_id}"
+        raw_author = (
+            format_author_name(sub.user.full_name, sub.user.username)
+            if sub.user
+            else f"user:{sub.user_id}"
+        )
         author = html.escape(raw_author)
         link = _topic_link(chat_short, topics_by_user.get(sub.user_id), sub)
 

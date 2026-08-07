@@ -261,6 +261,7 @@ _DEFAULTS: dict[str, str | dict[str, str]] = {
     'ADMIN_NOTIFY_RECOVER_USED': '♻️ {actor} использовал Recover постов.',
     'BAN_TARGET_IS_MODERATOR': '⛔ Нельзя заблокировать модератора. Сначала снимите с него роль.',
     'ROLE_BOOTSTRAP_PLACEHOLDER_NAME': '(не заходил)',
+    'AUTHOR_NAME_FALLBACK': '(без имени)',
     'MODERATORS_ADMIN_ONLY': '⛔ Раздел «Модераторы» доступен только администраторам.',
     'MODERATOR_GRANTED_FROM_ENV': 'Назначен через .env',
     'MODERATOR_GRANTED_INFO': 'Роль изменена: {when} · {by}',

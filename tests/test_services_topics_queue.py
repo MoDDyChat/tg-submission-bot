@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 
 from services import topics_queue
+from utils import formatting
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +107,58 @@ async def test_build_queue_lines_escapes_author_html(monkeypatch) -> None:
     assert len(lines) == 1
     assert "&lt;)_," in lines[0]
     assert "<)_," not in lines[0]
+
+
+async def test_build_queue_lines_caps_long_author_names(monkeypatch) -> None:
+    """A very long profile name is truncated so it cannot break the board layout."""
+    import datetime
+
+    sub = MagicMock()
+    sub.id = 42
+    sub.status = "pending"
+    sub.user_id = 7
+    sub.user.full_name = "очень длинное имя автора " * 10
+    sub.user.username = None
+    sub.created_at = datetime.datetime(2026, 6, 15, tzinfo=datetime.timezone.utc)
+
+    subs_result = MagicMock()
+    subs_result.scalars.return_value.all.return_value = [sub]
+    topics_result = []
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[subs_result, topics_result])
+    monkeypatch.setattr(topics_queue.config, "moderator_group_id", -1001234567890)
+
+    lines = await topics_queue._build_queue_lines(session)
+
+    author = lines[0].split(" — ")[1].split(" (#")[0]
+    assert formatting._display_width(author) <= formatting.AUTHOR_NAME_MAX_WIDTH
+    assert author.endswith("…")
+
+
+async def test_build_queue_lines_uses_fallback_for_blank_author_name(monkeypatch) -> None:
+    """Blank/invisible profile names fall back to @username instead of rendering empty."""
+    import datetime
+
+    sub = MagicMock()
+    sub.id = 42
+    sub.status = "pending"
+    sub.user_id = 7
+    sub.user.full_name = "  ㅤ "
+    sub.user.username = "nick"
+    sub.created_at = datetime.datetime(2026, 6, 15, tzinfo=datetime.timezone.utc)
+
+    subs_result = MagicMock()
+    subs_result.scalars.return_value.all.return_value = [sub]
+    topics_result = []
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[subs_result, topics_result])
+    monkeypatch.setattr(topics_queue.config, "moderator_group_id", -1001234567890)
+
+    lines = await topics_queue._build_queue_lines(session)
+
+    assert "@nick (#42)" in lines[0]
 
 
 async def test_empty_queue_creates_one_chunk(monkeypatch) -> None:

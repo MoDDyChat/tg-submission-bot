@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from types import SimpleNamespace
 
+import core.messages as msg
 from utils import formatting, html_entities, media, tags
 
 from tests.helpers import make_photo_sizes
@@ -105,6 +106,65 @@ def test_format_submission_preview_includes_tags_and_caption() -> None:
     assert "<b>Медиа:</b> 2 файл(ов)" in preview
     assert "<b>Теги:</b> #MineShield | #Art" in preview
     assert "<b>Описание:</b>\nОписание" in preview
+
+
+def test_format_author_name_keeps_short_names_untouched() -> None:
+    assert formatting.format_author_name("Автор") == "Автор"
+
+
+def test_format_author_name_caps_long_names_with_ellipsis() -> None:
+    result = formatting.format_author_name("Очень длинное имя автора с хвостом")
+
+    assert formatting._display_width(result) <= formatting.AUTHOR_NAME_MAX_WIDTH
+    assert result.endswith("…")
+
+
+def test_format_author_name_caps_wide_glyphs_by_display_width() -> None:
+    """Emoji and CJK take two columns, so fewer of them fit than latin letters."""
+    for wide in ("🌸🌟🍀" * 10, "文字" * 10, "🇷🇺" * 12):
+        result = formatting.format_author_name(wide)
+
+        assert formatting._display_width(result) <= formatting.AUTHOR_NAME_MAX_WIDTH
+        assert result.endswith("…")
+
+
+def test_format_author_name_collapses_whitespace() -> None:
+    assert formatting.format_author_name("  multi\nline   name  ") == "multi line name"
+
+
+def test_format_author_name_drops_invisible_padding_around_visible_text() -> None:
+    assert formatting.format_author_name("ㅤㅤИмя🎩🌼ㅤㅤㅤㅤ") == "Имя🎩🌼"
+
+
+def test_format_author_name_does_not_split_emoji_sequences() -> None:
+    result = formatting.format_author_name("👨‍👩‍👧‍👦" * 4)
+
+    assert formatting._display_width(result) <= formatting.AUTHOR_NAME_MAX_WIDTH
+    assert result.count("👨") == result.count("👦")  # no half-built family left over
+
+
+def test_format_author_name_keeps_flags_paired() -> None:
+    result = formatting.format_author_name("🇷🇺" * 12)
+
+    assert len(result.rstrip("…")) % 2 == 0  # regional indicators cut in pairs
+
+
+def test_format_author_name_isolates_rtl_names() -> None:
+    """RTL names must not reorder the entry number and link around them."""
+    for rtl in ("סוכר [сахар]", "Nick٩( ᐛ )و"):
+        result = formatting.format_author_name(rtl)
+
+        assert result.startswith("⁨") and result.endswith("⁩")
+
+
+def test_format_author_name_leaves_ltr_names_unwrapped() -> None:
+    assert "⁨" not in formatting.format_author_name("Имя автора🎀")
+
+
+def test_format_author_name_falls_back_for_blank_names() -> None:
+    for blank in ("", "   ", "ㅤ​"):
+        assert formatting.format_author_name(blank) == msg.AUTHOR_NAME_FALLBACK
+        assert formatting.format_author_name(blank, "nick") == "@nick"
 
 
 def test_format_publication_summary_without_caption_uses_placeholder() -> None:
