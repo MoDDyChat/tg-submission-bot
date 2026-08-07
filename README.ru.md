@@ -244,6 +244,8 @@ python main.py
 | `EDIT_LOCK_TTL_SECONDS` | нет | `300` | TTL блокировки редактирования поста |
 | `PROXY_URL` | нет | пусто | SOCKS5/HTTP-прокси к Telegram API |
 | `SILENT_MODERATOR_NOTIFICATIONS` | нет | `true` | Модгруппа и DM админам — без пуш-пинга |
+| `TAG_PARSING_MODE` | нет | `suggest` | Хэштеги в описании: `off` — игнорировать; `suggest` — предложить модератору; `auto` — точные совпадения с пресетами проставлять сразу |
+| `TAG_PARSING_STRIP_FROM_CAPTION` | нет | `false` | Вырезать из начала и конца описания строки, состоящие только из хэштегов |
 | `API_HOST` / `API_PORT` | нет | `0.0.0.0` / `5400` | HTTP-сервер health/metrics |
 | `LOG_DIR` | нет | `/logs` в образе | Каталог лог-файла; вне Docker — `<проект>/logs` |
 

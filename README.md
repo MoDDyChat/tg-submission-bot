@@ -242,6 +242,8 @@ python main.py
 | `EDIT_LOCK_TTL_SECONDS` | no | `300` | TTL of the post editing lock |
 | `PROXY_URL` | no | empty | SOCKS5/HTTP proxy to the Telegram API |
 | `SILENT_MODERATOR_NOTIFICATIONS` | no | `true` | Moderation group and admin DMs — no push notifications |
+| `TAG_PARSING_MODE` | no | `suggest` | Hashtags in the caption: `off` — ignore; `suggest` — offer them to the moderator; `auto` — also apply exact preset matches |
+| `TAG_PARSING_STRIP_FROM_CAPTION` | no | `false` | Cut lines made only of hashtags from the head and tail of the caption |
 | `API_HOST` / `API_PORT` | no | `0.0.0.0` / `5400` | HTTP server for health/metrics |
 | `LOG_DIR` | no | `/logs` in the image | Directory for the log file; outside Docker, `<project>/logs` |
 

@@ -110,6 +110,39 @@ async def test_alembic_upgrade_head_creates_expected_tables(integration_db_url: 
 
 
 @pytest.mark.asyncio
+async def test_alembic_upgrade_head_adds_suggested_tags_column(integration_db_url: str) -> None:
+    """After ``alembic upgrade head`` the submissions.suggested_tags column exists."""
+    engine = create_async_engine(integration_db_url, pool_pre_ping=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=ROOT,
+            env=_build_alembic_env(integration_db_url),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+        async with engine.connect() as conn:
+            submission_columns = await conn.run_sync(
+                lambda sync_conn: {
+                    column["name"]
+                    for column in inspect(sync_conn).get_columns("submissions")
+                }
+            )
+
+        assert "suggested_tags" in submission_columns
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_alembic_downgrade_to_base_and_back(integration_db_url: str) -> None:
     """Verify the whole history rolls back to base and reapplies cleanly."""
     engine = create_async_engine(integration_db_url, pool_pre_ping=True)

@@ -82,6 +82,11 @@ class Submission(Base):
     tags: Mapped[list[str]] = mapped_column(
         JSON, nullable=False, default=list, server_default=text("'[]'::json")
     )
+    # Tags proposed by the author in the caption. NULL = parsing not performed /
+    # nothing found; never backfilled, so old rows stay NULL.
+    suggested_tags: Mapped[list[dict] | None] = mapped_column(
+        JSON, nullable=True, default=None
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     topic_card_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     topic_media_message_ids: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)

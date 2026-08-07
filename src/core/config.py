@@ -1,3 +1,4 @@
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, PostgresDsn, computed_field, field_validator, model_validator
@@ -76,6 +77,13 @@ class Config(BaseSettings):
     # хендлеров уходят с disable_notification=True (без пуш-пинга).
     # SILENT_MODERATOR_NOTIFICATIONS=false — вернуть звук.
     silent_moderator_notifications: bool = True
+    # Режим парсинга хэштегов из описания поста (TAG_PARSING_MODE=off|suggest|auto):
+    # off — не парсить, suggest — сохранять в suggested_tags (решает модератор),
+    # auto — точные совпадения с пресетами дополнительно писать в tags.
+    tag_parsing_mode: Literal["off", "suggest", "auto"] = "suggest"
+    # Вырезать из caption «голые» строки, целиком состоящие из хэштегов
+    # (TAG_PARSING_STRIP_FROM_CAPTION=true)
+    tag_parsing_strip_from_caption: bool = False
 
     @computed_field  # type: ignore[prop-decorator]
     @property

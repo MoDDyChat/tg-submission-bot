@@ -22,6 +22,7 @@ from db.queries import (
 from keyboards.callbacks import SubmissionCB, TagWizardCB
 from keyboards.tags import tags_custom_kb, tags_preset_page_kb
 from services import edit_lock, topic_notifications, topics
+from services.tag_parsing import deserialize_suggested
 from states.moderator import ModeratorReview
 from utils.tags import (
     MAX_CUSTOM_TAG_LENGTH,
@@ -177,6 +178,12 @@ def _build_wizard_view(
         state = ModeratorReview.editing_tags_presets
     else:
         text = _build_preview_text(tags, caption, msg.TAGS_WIZARD_CUSTOM)
+        suggested_unknown = [
+            tag for tag in data.get("wizard_suggested_unknown", []) if isinstance(tag, str)
+        ]
+        if suggested_unknown:
+            hint_tags = ", ".join(f"#{html.escape(tag)}" for tag in suggested_unknown)
+            text += "\n\n" + msg.TAGS_WIZARD_SUGGESTED_HINT.format(tags=hint_tags)
         keyboard = tags_custom_kb(can_go_back=bool(sections))
         state = ModeratorReview.editing_tags_custom
 
@@ -262,11 +269,23 @@ async def handle_edit_tags_start(
     sections, grouped = await _load_presets(session)
     selected_by_section, custom = _detect_existing_presets(sub.tags or [], sections, grouped)
 
+    suggested_unknown: list[str] = []
+    if not sub.tags and sub.suggested_tags:
+        suggested = deserialize_suggested(sub.suggested_tags)
+        preselect, _ = _detect_existing_presets(
+            [item.tag for item in suggested if item.tag is not None],
+            sections,
+            grouped,
+        )
+        selected_by_section = preselect
+        suggested_unknown = [item.raw for item in suggested if item.tag is None]
+
     await state.update_data(
         sub_id=callback_data.sub_id,
         wizard_caption=sub.caption,
         wizard_sections=selected_by_section,
         wizard_custom=custom,
+        wizard_suggested_unknown=suggested_unknown,
         wizard_page_index=0,
         wizard_message_id=None,
     )

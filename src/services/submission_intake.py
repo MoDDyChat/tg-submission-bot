@@ -3,10 +3,11 @@
 import asyncio
 import time
 
-from aiogram.types import Message
+from aiogram.types import Message, MessageEntity
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import core.messages as msg
+from core.config import config
 from core.logging import get_logger, fmt_user
 from db.models import User
 from db.session import session_factory
@@ -14,11 +15,18 @@ from db.queries import (
     add_media,
     create_submission,
     get_submission_with_user,
+    list_tag_presets_grouped,
 )
 from keyboards.viewer import submission_confirmed_kb
 from services import topics
 from services.author_card import request_author_card
 from services.dashboard import request_dashboard
+from services.tag_parsing import (
+    extract_hashtags,
+    match_suggested_tags,
+    serialize_suggested,
+    strip_hashtag_lines,
+)
 from services.topics_queue import render_queue as _render_queue
 from utils.html_entities import get_html_caption, get_html_text
 from utils.media import extract_media_info
@@ -46,6 +54,39 @@ async def wait_for_pending_groups(timeout: float = 30.0) -> None:
     deadline = asyncio.get_running_loop().time() + timeout
     while _media_group_buffers and asyncio.get_running_loop().time() < deadline:
         await asyncio.sleep(0.5)
+
+
+async def _parse_suggested_tags(
+    session: AsyncSession,
+    plain_text: str | None,
+    entities: list[MessageEntity] | None,
+    html_caption: str | None,
+    has_media: bool,
+) -> tuple[list[dict] | None, str | None, list[str]]:
+    """Возвращает (suggested_tags_json, возможно-обрезанный caption, auto_tags)."""
+    if config.tag_parsing_mode == "off":
+        return None, html_caption, []
+
+    raw_tags = extract_hashtags(plain_text, entities)
+    if not raw_tags:
+        return None, html_caption, []
+
+    grouped = await list_tag_presets_grouped(session)
+    presets = [(entry.tag, entry.label) for entries in grouped.values() for entry in entries]
+    suggested = serialize_suggested(match_suggested_tags(raw_tags, presets))
+
+    if config.tag_parsing_strip_from_caption:
+        html_caption = strip_hashtag_lines(html_caption)
+
+    auto_tags: list[str] = []
+    if config.tag_parsing_mode == "auto":
+        for item in suggested:
+            tag = item["tag"]
+            if item["exact"] and isinstance(tag, str):
+                auto_tags.append(tag)
+        if not validate_caption_length(auto_tags, html_caption, has_media=has_media):
+            auto_tags = []
+    return suggested, html_caption, auto_tags
 
 
 async def _finalize_media_group(
@@ -93,7 +134,20 @@ async def _finalize_media_group(
 
     try:
         async with sf() as session:
-            sub = await create_submission(session, user_id=db_user.id, caption=clean_caption)
+            suggested_tags, clean_caption, auto_tags = await _parse_suggested_tags(
+                session,
+                plain_text=first_msg.caption,
+                entities=first_msg.caption_entities,
+                html_caption=clean_caption,
+                has_media=True,
+            )
+            sub = await create_submission(
+                session,
+                user_id=db_user.id,
+                caption=clean_caption,
+                suggested_tags=suggested_tags,
+                tags=auto_tags,
+            )
 
             for i, m in enumerate(messages):
                 info = extract_media_info(m)
@@ -165,7 +219,20 @@ async def submit_single_media(message: Message, session: AsyncSession, db_user: 
         await message.answer(msg.CAPTION_TOO_LONG)
         return
 
-    sub = await create_submission(session, user_id=db_user.id, caption=clean_caption)
+    suggested_tags, clean_caption, auto_tags = await _parse_suggested_tags(
+        session,
+        plain_text=message.caption,
+        entities=message.caption_entities,
+        html_caption=clean_caption,
+        has_media=True,
+    )
+    sub = await create_submission(
+        session,
+        user_id=db_user.id,
+        caption=clean_caption,
+        suggested_tags=suggested_tags,
+        tags=auto_tags,
+    )
     await add_media(
         session,
         submission_id=sub.id,
@@ -209,7 +276,20 @@ async def submit_text(message: Message, session: AsyncSession, db_user: User) ->
         await message.answer(msg.TEXT_TOO_LONG.format(length=length, max_length=MAX_TEXT_CAPTION))
         return
 
-    sub = await create_submission(session, user_id=db_user.id, caption=text)
+    suggested_tags, text, auto_tags = await _parse_suggested_tags(
+        session,
+        plain_text=message.text,
+        entities=message.entities,
+        html_caption=text,
+        has_media=False,
+    )
+    sub = await create_submission(
+        session,
+        user_id=db_user.id,
+        caption=text,
+        suggested_tags=suggested_tags,
+        tags=auto_tags,
+    )
 
     logger.info("Новый текстовый пост #%d от %s", sub.id, fmt_user(db_user))
 

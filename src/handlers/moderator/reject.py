@@ -104,15 +104,17 @@ async def handle_reject_reason(
         pass
     await _delete_tracked_messages(message.bot, message.chat.id, data)
 
-    # Notify the viewer
-    try:
-        await message.bot.send_message(
-            sub.user.telegram_id,
-            msg.REJECTION_NOTIFICATION.format(sub_id=sub_id, reason=reason_html),
-            parse_mode="HTML",
-        )
-    except Exception as e:
-        logger.warning("Не удалось уведомить зрителя об отклонении поста #%d: %s", sub_id, e)
+    # Notify the viewer — unless the moderator rejected their own post and
+    # would get the same reason twice in the very same chat
+    if sub.user.id != db_user.id:
+        try:
+            await message.bot.send_message(
+                sub.user.telegram_id,
+                msg.REJECTION_NOTIFICATION.format(sub_id=sub_id, reason=reason_html),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.warning("Не удалось уведомить зрителя об отклонении поста #%d: %s", sub_id, e)
 
     await state.clear()
     await message.answer(

@@ -223,6 +223,21 @@ async def test_submission_and_media_queries_load_related_entities(db_session) ->
 
 
 @pytest.mark.asyncio
+async def test_create_submission_persists_suggested_tags(db_session) -> None:
+    user, _ = await get_or_create_user(db_session, 783, "author", "Author")
+    suggested = [{"raw": "art", "tag": "art", "exact": True}]
+    submission = await create_submission(
+        db_session, user.id, "Описание", suggested_tags=suggested
+    )
+    await db_session.commit()
+
+    reloaded = await get_submission(db_session, submission.id)
+
+    assert reloaded.suggested_tags == suggested
+    assert reloaded.tags == []
+
+
+@pytest.mark.asyncio
 async def test_publication_queries_and_active_submission_filters(db_session) -> None:
     user, _ = await get_or_create_user(db_session, 555, "author", "Author")
     pending = await create_submission(db_session, user.id, "Pending")

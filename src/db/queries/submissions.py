@@ -14,8 +14,11 @@ async def create_submission(
     user_id: int,
     caption: str | None,
     tags: list[str] | None = None,
+    suggested_tags: list[dict] | None = None,
 ) -> Submission:
-    sub = Submission(user_id=user_id, caption=caption, tags=tags or [])
+    sub = Submission(
+        user_id=user_id, caption=caption, tags=tags or [], suggested_tags=suggested_tags
+    )
     session.add(sub)
     await session.flush()
     return sub

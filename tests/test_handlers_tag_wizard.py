@@ -4,8 +4,9 @@ from unittest.mock import AsyncMock
 
 
 import core.messages as msg
-from handlers import tag_wizard
 from handlers.moderator import _helpers as moderator_helpers
+from handlers import tag_wizard
+from keyboards.callbacks import SubmissionCB
 from states.moderator import ModeratorReview
 from tests.helpers import (
     FakeState,
@@ -117,6 +118,98 @@ def test_build_wizard_view_returns_custom_page_after_last_section() -> None:
     assert state == ModeratorReview.editing_tags_custom
     assert msg.TAGS_WIZARD_CUSTOM in text
     assert keyboard.inline_keyboard[-1][0].text == "Завершить редактирование"
+
+
+def test_build_wizard_view_custom_page_shows_suggested_hint() -> None:
+    sections, grouped = _wizard_data()
+    state, text, keyboard, *_ = tag_wizard._build_wizard_view(
+        {
+            "wizard_caption": "Описание",
+            "wizard_sections": {"category": [], "character": []},
+            "wizard_custom": [],
+            "wizard_suggested_unknown": ["тег & <script>", "тег2"],
+            "wizard_page_index": len(sections),
+        },
+        sections,
+        grouped,
+    )
+
+    assert state == ModeratorReview.editing_tags_custom
+    assert msg.TAGS_WIZARD_CUSTOM in text
+    assert "💡 Автор предлагал теги:" in text
+    assert "#тег &amp; &lt;script&gt;, #тег2" in text
+    assert "<script>" not in text
+    assert keyboard.inline_keyboard[-1][0].text == "Завершить редактирование"
+
+
+async def test_edit_tags_start_prefills_sections_and_unknown_from_suggested(monkeypatch) -> None:
+    sections, grouped = _wizard_data()
+    sub = make_submission(sub_id=5, status="pending", caption="Описание", media=[])
+    sub.suggested_tags = [
+        {"raw": "art", "tag": "MineShieldArt", "exact": True},
+        {"raw": "неизвестный", "tag": None, "exact": False},
+    ]
+    callback = make_callback(message=make_message())
+    state = FakeState({})
+    db_user = make_user()
+
+    monkeypatch.setattr(tag_wizard, "_load_presets", AsyncMock(return_value=(sections, grouped)))
+    monkeypatch.setattr(tag_wizard, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(tag_wizard, "_render_wizard_message", AsyncMock())
+    monkeypatch.setattr(tag_wizard.edit_lock, "extend_lock", AsyncMock(return_value=True))
+
+    await tag_wizard.handle_edit_tags_start(
+        callback, SubmissionCB(action="edit_tags", sub_id=5), AsyncMock(), state, db_user
+    )
+
+    assert state.data["wizard_sections"] == {"category": ["MineShieldArt"], "character": []}
+    assert state.data["wizard_custom"] == []
+    assert state.data["wizard_suggested_unknown"] == ["неизвестный"]
+    assert state.data["wizard_page_index"] == 0
+
+
+async def test_edit_tags_start_no_prefill_when_tags_present(monkeypatch) -> None:
+    sections, grouped = _wizard_data()
+    sub = make_submission(sub_id=5, status="pending", caption="Описание", media=[], tags=["Custom"])
+    sub.suggested_tags = [
+        {"raw": "art", "tag": "MineShieldArt", "exact": True},
+        {"raw": "неизвестный", "tag": None, "exact": False},
+    ]
+    callback = make_callback(message=make_message())
+    state = FakeState({})
+    db_user = make_user()
+
+    monkeypatch.setattr(tag_wizard, "_load_presets", AsyncMock(return_value=(sections, grouped)))
+    monkeypatch.setattr(tag_wizard, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(tag_wizard, "_render_wizard_message", AsyncMock())
+    monkeypatch.setattr(tag_wizard.edit_lock, "extend_lock", AsyncMock(return_value=True))
+
+    await tag_wizard.handle_edit_tags_start(
+        callback, SubmissionCB(action="edit_tags", sub_id=5), AsyncMock(), state, db_user
+    )
+
+    assert state.data["wizard_sections"] == {"category": [], "character": []}
+    assert state.data["wizard_custom"] == ["Custom"]
+    assert state.data["wizard_suggested_unknown"] == []
+
+
+async def test_edit_tags_start_clears_stale_suggested_unknown(monkeypatch) -> None:
+    sections, grouped = _wizard_data()
+    sub = make_submission(sub_id=5, status="pending", caption="Описание", media=[])
+    callback = make_callback(message=make_message())
+    state = FakeState({"wizard_suggested_unknown": ["stale"]})
+    db_user = make_user()
+
+    monkeypatch.setattr(tag_wizard, "_load_presets", AsyncMock(return_value=(sections, grouped)))
+    monkeypatch.setattr(tag_wizard, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(tag_wizard, "_render_wizard_message", AsyncMock())
+    monkeypatch.setattr(tag_wizard.edit_lock, "extend_lock", AsyncMock(return_value=True))
+
+    await tag_wizard.handle_edit_tags_start(
+        callback, SubmissionCB(action="edit_tags", sub_id=5), AsyncMock(), state, db_user
+    )
+
+    assert state.data["wizard_suggested_unknown"] == []
 
 
 async def test_render_wizard_message_edits_existing_message(monkeypatch) -> None:

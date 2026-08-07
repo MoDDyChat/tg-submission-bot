@@ -37,6 +37,7 @@ from core.logging import get_logger
 from core.messages import (
     LEGEND_MOVED_NOTICE,
     TOPIC_CARD_OUTDATED,
+    TOPIC_CARD_SUGGESTED_TAGS,
     TOPIC_WELCOME_TEXT,
 )
 from core.topic_status_config import get_style as _get_status_style
@@ -58,6 +59,7 @@ from db.queries import (
 )
 from keyboards.moderator import topic_submission_card_kb
 from services.author_card import create_author_card_message
+from services.tag_parsing import deserialize_suggested
 from utils.tags import format_tags_line
 
 logger = get_logger(__name__)
@@ -597,6 +599,17 @@ async def _render_submission_card(
     return text, kb
 
 
+def _format_suggested_line(suggested_tags: list[dict]) -> str:
+    """Format author-suggested tags: canonical '#Tag' for matched, '#raw(?)' otherwise."""
+    parts = []
+    for item in deserialize_suggested(suggested_tags):
+        if item.tag:
+            parts.append(f"#{html.escape(item.tag)}")
+        else:
+            parts.append(f"#{html.escape(item.raw)}(?)")
+    return " | ".join(parts)
+
+
 def _format_topic_card_text(
     submission: Submission,
     *,
@@ -626,6 +639,10 @@ def _format_topic_card_text(
 
     if sub.tags:
         lines.append(f"<b>Теги:</b> {format_tags_line(sub.tags)}")
+    elif sub.suggested_tags:
+        lines.append(
+            TOPIC_CARD_SUGGESTED_TAGS.format(tags=_format_suggested_line(sub.suggested_tags))
+        )
 
     if sub.caption:
         lines.append(f"\n<b>Описание:</b>\n{sub.caption}")
