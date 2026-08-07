@@ -178,6 +178,48 @@ async def list_expired_locks(session: AsyncSession) -> list[EditLock]:
     return list(result.scalars().all())
 
 
+async def release_moderator_locks(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    telegram_id: int,
+) -> list[EditLock]:
+    """Delete every edit lock held by a moderator being demoted.
+
+    Submission locks key on ``moderator_id = User.id``, management locks on
+    ``User.telegram_id``. A single ``DELETE ... RETURNING`` avoids the race
+    where a lock is re-acquired by another moderator between a SELECT and a
+    DELETE — the DELETE only matches rows still owned by this user.
+    """
+    stmt = text("""
+        DELETE FROM edit_locks
+        WHERE (resource_type = 'submission' AND moderator_id = :user_id)
+           OR (resource_type = 'management' AND moderator_id = :telegram_id)
+        RETURNING resource_type, resource_id, moderator_id, acquired_at, expires_at
+    """)
+    result = await session.execute(stmt, {"user_id": user_id, "telegram_id": telegram_id})
+    rows = result.fetchall()
+    if not rows:
+        return []
+
+    removed: list[EditLock] = []
+    for row in rows:
+        lock = EditLock()
+        lock.resource_type = row.resource_type
+        lock.resource_id = row.resource_id
+        lock.moderator_id = row.moderator_id
+        lock.acquired_at = row.acquired_at
+        lock.expires_at = row.expires_at
+        removed.append(lock)
+
+    await session.flush()
+    logger.info(
+        "Снято локов редактирования при разжаловании (user_id=%d): %d",
+        user_id, len(removed),
+    )
+    return removed
+
+
 async def cleanup_expired_locks(session: AsyncSession) -> list[EditLock]:
     """Delete all expired locks and return the removed rows.
 

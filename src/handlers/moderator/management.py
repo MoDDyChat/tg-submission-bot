@@ -57,6 +57,50 @@ logger = get_logger(__name__)
 
 router = Router()
 
+# ── Recover background task lifecycle ──────────────────────────────
+# A Recover run is a long background task; only one may be active at a time,
+# otherwise two admins or two fast clicks could race and corrupt card IDs.
+_recover_lock: asyncio.Lock | None = None
+_recover_task: asyncio.Task | None = None
+
+
+def _get_recover_lock() -> asyncio.Lock:
+    """Return the Recover lock, creating it lazily on the current event loop."""
+    global _recover_lock
+    if _recover_lock is None:
+        _recover_lock = asyncio.Lock()
+    return _recover_lock
+
+
+def _on_recover_done(task: asyncio.Task) -> None:
+    """Log the outcome of a Recover task and free the module-level slot."""
+    global _recover_task
+    if _recover_task is task:
+        _recover_task = None
+    if task.cancelled():
+        logger.info("Recover постов отменён")
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("Recover постов завершился с ошибкой", exc_info=exc)
+
+
+async def cancel_recover_task() -> None:
+    """Cancel a running Recover background task and await its unwinding.
+
+    The task may be mid-transaction: only after it has actually finished
+    unwinding can the DB engine and bot session be shut down safely.
+    """
+    task = _recover_task
+    if task is None or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 _PRESETS_LOCK_TTL = 600  # 10 minutes
 _BANNED_LOCK_TTL = 600
 
@@ -627,6 +671,7 @@ async def handle_home(
     mid = db_user.telegram_id
     await edit_lock.release_lock(session, "management", "presets", mid)
     await edit_lock.release_lock(session, "management", "banned", mid)
+    await edit_lock.release_lock(session, "management", "moderators", mid)
     await _render_home(
         callback.bot,
         callback.message.chat.id,
@@ -717,49 +762,81 @@ async def handle_recover(
     state: FSMContext,
     db_user: User,
 ) -> None:
+    global _recover_task
     if not db_user.is_admin:
         await callback.answer(msg.RECOVER_ADMIN_ONLY, show_alert=True)
         return
-    await callback.answer()
+    # Check-then-set must be atomic: two simultaneous callbacks could both see
+    # a free slot and start two runs otherwise (the inner lock only serialises
+    # the runs themselves, it would not prevent the double notification).
+    async with _get_recover_lock():
+        if _recover_task is not None and not _recover_task.done():
+            await callback.answer(msg.RECOVER_ALREADY_RUNNING, show_alert=True)
+            return
+        await callback.answer()
 
-    # Show "running" state immediately so the admin knows something is happening.
-    submissions = await get_active_submissions(session)
-    total_count = len(submissions)
-    await state.set_state(ModeratorReview.management_menu)
-    await _render_management_message(
-        callback.bot,
-        callback.message.chat.id,
-        state,
-        msg.MANAGEMENT_RECOVER_TEXT.format(
-            body=msg.RECOVER_CHECKING.format(count=total_count)
-        ),
-        management_back_kb("menu"),
-        message_id=callback.message.message_id,
-    )
+        await state.set_state(ModeratorReview.management_menu)
+        chat_id = callback.message.chat.id
+        bot = callback.bot
+        actor = db_user
 
-    total, recovered = await recover_missing_posts(callback.bot, session)
+        async def _do_recover() -> None:
+            try:
+                async with _get_recover_lock():
+                    # Show "running" state immediately so the admin knows something
+                    # is happening; the count query runs in its own short session.
+                    async with session_factory() as count_session:
+                        total_count = len(await get_active_submissions(count_session))
+                    await _render_management_message(
+                        bot,
+                        chat_id,
+                        state,
+                        msg.MANAGEMENT_RECOVER_TEXT.format(
+                            body=msg.RECOVER_CHECKING.format(count=total_count)
+                        ),
+                        management_back_kb("menu"),
+                    )
 
-    chat_id = callback.message.chat.id
-    bot = callback.bot
+                    r_total, r_recovered = await recover_missing_posts(bot, session_factory)
+                    if r_total == 0:
+                        r_body = msg.RECOVER_NO_ACTIVE
+                    elif r_recovered == 0:
+                        r_body = msg.RECOVER_ALL_OK.format(total=r_total)
+                    else:
+                        r_body = msg.RECOVER_DONE.format(recovered=r_recovered, total=r_total)
+                    await _render_management_message(
+                        bot,
+                        chat_id,
+                        state,
+                        msg.MANAGEMENT_RECOVER_TEXT.format(body=r_body),
+                        management_back_kb("menu"),
+                    )
+                    async with session_factory() as notify_session:
+                        await admin_notifications.notify_admins(
+                            bot, notify_session,
+                            actor=actor,
+                            action_text=msg.ADMIN_NOTIFY_RECOVER_USED.format(
+                                actor=admin_notifications.actor_display(actor),
+                            ),
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Recover постов завершился ошибкой")
+                try:
+                    await _render_management_message(
+                        bot,
+                        chat_id,
+                        state,
+                        msg.MANAGEMENT_RECOVER_TEXT.format(body=msg.SOMETHING_WENT_WRONG),
+                        management_back_kb("menu"),
+                    )
+                except Exception:
+                    logger.exception("Не удалось показать ошибку Recover")
 
-    async def _do_recover() -> None:
-        async with session_factory() as recover_session:
-            r_total, r_recovered = await recover_missing_posts(bot, recover_session)
-        if r_total == 0:
-            r_body = msg.RECOVER_NO_ACTIVE
-        elif r_recovered == 0:
-            r_body = msg.RECOVER_ALL_OK.format(total=r_total)
-        else:
-            r_body = msg.RECOVER_DONE.format(recovered=r_recovered, total=r_total)
-        await _render_management_message(
-            bot,
-            chat_id,
-            state,
-            msg.MANAGEMENT_RECOVER_TEXT.format(body=r_body),
-            management_back_kb("menu"),
-        )
-
-    asyncio.create_task(_do_recover())
+        task = asyncio.create_task(_do_recover())
+        _recover_task = task
+        task.add_done_callback(_on_recover_done)
 
 
 @router.callback_query(ManagementCB.filter(F.action == "submit"))
@@ -789,6 +866,7 @@ async def handle_close_management(
     mid = db_user.telegram_id
     await edit_lock.release_lock(session, "management", "presets", mid)
     await edit_lock.release_lock(session, "management", "banned", mid)
+    await edit_lock.release_lock(session, "management", "moderators", mid)
     try:
         await callback.message.delete()
     except Exception:

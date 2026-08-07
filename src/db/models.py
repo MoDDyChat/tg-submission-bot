@@ -18,6 +18,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -33,6 +34,14 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(512), nullable=False)
     is_moderator: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    role_granted_by: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_users_role_granted_by_users"),
+        nullable=True,
+    )
+    role_granted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
     is_banned: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     ban_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -42,13 +51,36 @@ class User(Base):
     topic: Mapped["UserTopic | None"] = relationship(back_populates="user", uselist=False)
 
 
+class ModeratorInvite(Base):
+    __tablename__ = "moderator_invites"
+
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_by: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    used_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+
+    __table_args__ = (
+        Index("idx_moderator_invites_expires_at", "expires_at"),
+    )
+
+
 class Submission(Base):
     __tablename__ = "submissions"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     caption: Mapped[str | None] = mapped_column(Text)
-    tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list, server_default="'[]'::json")
+    # text() and not a bare string: a plain str is emitted as a quoted literal,
+    # producing the invalid DDL `DEFAULT '''[]''::json'` (matches 0001_initial)
+    tags: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list, server_default=text("'[]'::json")
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     topic_card_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     topic_media_message_ids: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)

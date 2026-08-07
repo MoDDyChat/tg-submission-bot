@@ -15,22 +15,24 @@ moderates it in a dedicated forum group and publishes it to a channel on a sched
 - sees a "Post #N accepted" confirmation and can cancel their own submission
 - gets a notification when the post is published or rejected
 
-**Moderator** (IDs listed in `MODERATOR_IDS`):
+**Moderator** (the role lives in the database; `MODERATOR_IDS` only seeds it at startup):
 - every viewer gets **their own topic** in the private forum group; media and a post card with its status appear there
 - post preview, caption editing, adding/removing media
 - tag system driven by a wizard with presets (sections + items, editable right inside the bot)
 - publish immediately or on a schedule, unschedule, queue board in the General topic
 - reject a post (with a reason or silently), ban the author, contact the author directly
 
-**Administrator** (`ADMIN_IDS`):
+**Administrator** (`ADMIN_IDS` seeds the role the same way):
 - everything a moderator can do — an admin is a moderator with extra rights, so there is
   no need to repeat the ID in `MODERATOR_IDS`
+- "Moderators" section — appoint and demote moderators right inside the bot, no `.env`
+  edit and no restart (see [Managing moderators](#managing-moderators))
 - "Recover posts" button — restores lost cards in the topics
-- DM notifications about preset edits and bans
+- DM notifications about preset edits, bans and every role change
 
-In short: moderators review and publish submissions, admins additionally get the recovery
-tool and are told when someone edits the tag presets or bans a user. If you are running the
-bot alone, just put your own ID into `ADMIN_IDS` and leave `MODERATOR_IDS` empty.
+In short: moderators review and publish submissions, admins additionally manage the roster,
+get the recovery tool and are told when someone edits the tag presets or bans a user. If you are
+running the bot alone, just put your own ID into `ADMIN_IDS` and leave `MODERATOR_IDS` empty.
 
 Details: [`docs/pipelines.md`](docs/pipelines.md), [`docs/roles.md`](docs/roles.md),
 [`docs/publishing.md`](docs/publishing.md), [`docs/tags-system.md`](docs/tags-system.md).
@@ -108,7 +110,9 @@ DB__NAME=tg_submission_bot
 DB__USER=postgres
 DB__PASSWORD=<your password>
 
-# For several moderators, list the IDs comma-separated on one line:
+# Bootstrap lists, not the full roster: the IDs below are granted their role at
+# startup, after that the roster is managed inside the bot. For several IDs,
+# list them comma-separated on one line:
 #   MODERATOR_IDS=123456789,987654321,555444333
 MODERATOR_IDS=123456789
 # Admins get moderator rights automatically - no need to repeat them above
@@ -168,6 +172,40 @@ That's it, the bot is running. Now send it `/start` from a moderator account.
 
 ---
 
+## Managing moderators
+
+**The database is the source of truth for roles.** `MODERATOR_IDS` / `ADMIN_IDS` are only a
+bootstrap and break-glass list: on every start the bot grants the listed IDs their role
+(creating a placeholder user row if the person has never written to the bot) and **never takes
+a role away**. Removing an ID from the list and restarting does *not* demote anyone.
+
+Everything else happens inside the bot: `/start` → **Management → Moderators** (the section is
+visible to admins only). From there you can:
+
+- **Create an invite link** — a one-shot `https://t.me/<bot>?start=modinvite_<token>` link,
+  valid for 24 hours. Whoever opens it first becomes a moderator; the link is burned on use,
+  so it cannot be reused even if it gets forwarded. Expired links are cleaned up daily.
+- **Add by Telegram ID** — enter the ID directly, no invite round-trip.
+- **Demote a moderator** — clears both roles, cancels their unused invite links and releases
+  any post-editing locks they were holding, so nothing stays stuck.
+- **Grant / revoke admin** — an admin keeps the moderator role when admin rights are revoked.
+
+Guardrails (all enforced in the same transaction as the change):
+
+- nobody can change their own role;
+- the last remaining admin cannot be demoted;
+- a banned user cannot be given a role, and a user holding a role cannot be banned —
+  demote them first;
+- a user listed in `MODERATOR_IDS` / `ADMIN_IDS` is **config-protected** and cannot be demoted
+  through the UI (the next restart would hand the role straight back). To remove such a person,
+  take their ID out of `.env` first.
+
+Every role change is DM'd to all admins as an audit line, and the affected user is notified too.
+
+Details: [`docs/roles.md`](docs/roles.md).
+
+---
+
 ## Running without Docker
 
 You will need your own PostgreSQL 14+ and, optionally, Redis.
@@ -193,8 +231,8 @@ python main.py
 | `DB__NAME` | no | `tg_submission_bot` | Database name |
 | `DB__USER` | no | `postgres` | Database user |
 | `DB__PASSWORD` | yes | — | Database password |
-| `MODERATOR_IDS` | yes* | — | Comma-separated moderator IDs: `123456789,987654321` |
-| `ADMIN_IDS` | no | empty | Admin IDs; they get moderator rights automatically |
+| `MODERATOR_IDS` | yes* | — | Bootstrap moderator IDs, comma-separated: `123456789,987654321` |
+| `ADMIN_IDS` | no | empty | Bootstrap admin IDs; they get moderator rights automatically |
 | `CHANNEL_ID` | yes | — | ID of the publishing channel (`-100...`) |
 | `MODERATOR_GROUP_ID` | yes | — | ID of the moderation forum group (`-100...`) |
 | `TIMEZONE` | no | `Europe/Moscow` | Timezone used for the publishing schedule |
@@ -208,6 +246,7 @@ python main.py
 | `LOG_DIR` | no | `/logs` in the image | Directory for the log file; outside Docker, `<project>/logs` |
 
 \* At least one of `MODERATOR_IDS` / `ADMIN_IDS` must be filled in; either one on its own is fine.
+Both are **bootstrap lists**, not the live roster — see [Managing moderators](#managing-moderators).
 
 The double underscore in `BOT__TOKEN` and `DB__*` is not a typo: that is how pydantic-settings
 maps variables onto the nested sections of the config.
@@ -266,6 +305,8 @@ Telegram `file_id` is stored, so `pg_dump` is enough.
 | `Нужен хотя бы один ID в MODERATOR_IDS или ADMIN_IDS` ("at least one ID is required") | both lists are empty |
 | The bot does not create topics | Topics are not enabled in the group, or the bot lacks the "Manage topics" permission |
 | A moderator receives no DM notifications | they never pressed `/start` in the bot |
+| An ID was removed from `MODERATOR_IDS`, but the person still moderates | roles live in the DB; demote them via Management → Moderators |
+| "Moderators" is missing from the Management menu | the account is a moderator, not an admin |
 | No tables / SQL errors on startup | auto-migrations are disabled (`DB_AUTO_MIGRATE=false`) |
 | FSM state is lost after a restart | `REDIS_URL` is not set |
 

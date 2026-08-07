@@ -50,7 +50,16 @@ class UnbanCB(CallbackData, prefix="unban"):
 
 
 class ManagementCB(CallbackData, prefix="mgmt"):
-    action: Literal["home", "menu", "presets", "banned", "recover", "close", "submit"]
+    action: Literal["home", "menu", "presets", "banned", "moderators", "recover", "close", "submit"]
+
+
+class ModeratorCB(CallbackData, prefix="mod"):
+    action: Literal[
+        "list", "view", "add", "invite", "enter_id",
+        "grant_admin", "revoke_admin", "remove",
+        "confirm_remove", "confirm_revoke",
+    ]
+    user_id: int = 0
 
 
 class TagPresetCB(CallbackData, prefix="tpreset"):

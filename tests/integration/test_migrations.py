@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -26,6 +26,7 @@ REQUIRED_TABLES = {
     "tag_presets",
     "messages",
     "system_messages",
+    "moderator_invites",
 }
 
 
@@ -57,6 +58,10 @@ async def test_alembic_upgrade_head_creates_expected_tables(integration_db_url: 
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
+            # alembic_version is not part of Base.metadata: drop_all leaves a
+            # leftover row, and if it already says head the subprocess upgrade
+            # below becomes a no-op while the app tables are gone.
+            await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
 
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "upgrade", "head"],
@@ -85,6 +90,12 @@ async def test_alembic_upgrade_head_creates_expected_tables(integration_db_url: 
                     for column in inspect(sync_conn).get_columns("submissions")
                 }
             )
+            user_columns = await conn.run_sync(
+                lambda sync_conn: {
+                    column["name"]
+                    for column in inspect(sync_conn).get_columns("users")
+                }
+            )
 
         assert REQUIRED_TABLES.issubset(table_names)
         assert {
@@ -93,6 +104,7 @@ async def test_alembic_upgrade_head_creates_expected_tables(integration_db_url: 
             "title_force_sync_version",
         }.issubset(user_topic_columns)
         assert "card_rendered_hash" in submission_columns
+        assert {"role_granted_by", "role_granted_at"}.issubset(user_columns)
     finally:
         await engine.dispose()
 

@@ -5,6 +5,7 @@ re-exports every public symbol so existing imports continue to work unchanged.
 """
 
 from db.queries.messages import create_message
+from db.queries.moderators import count_admins, list_moderators, set_roles
 from db.queries.publications import (
     create_publication,
     delete_publication,
@@ -74,6 +75,10 @@ from db.queries.users import (
 __all__ = [
     # messages
     "create_message",
+    # moderators
+    "count_admins",
+    "list_moderators",
+    "set_roles",
     # publications
     "create_publication",
     "delete_publication",

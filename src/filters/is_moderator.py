@@ -1,10 +1,11 @@
 from aiogram.filters import BaseFilter
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import CallbackQuery, Message
 
-from core.config import config
+from db.models import User
 
 
 class IsModerator(BaseFilter):
-    async def __call__(self, event: Message | CallbackQuery) -> bool:
-        user = event.from_user
-        return user is not None and user.id in config.moderator_ids
+    """Pass when the incoming event's user has the ``is_moderator`` DB flag."""
+
+    async def __call__(self, event: Message | CallbackQuery, db_user: User) -> bool:
+        return db_user.is_moderator

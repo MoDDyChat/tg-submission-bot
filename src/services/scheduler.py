@@ -184,6 +184,17 @@ async def cleanup_edit_locks_job(
             await session.commit()
 
 
+async def cleanup_moderator_invites_job(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Daily cleanup of expired moderator invite links."""
+    from services.moderator_invites import cleanup_expired_invites
+
+    async with session_factory() as session:
+        await cleanup_expired_invites(session)
+        await session.commit()
+
+
 def shutdown_scheduler() -> None:
     if scheduler is None:
         return

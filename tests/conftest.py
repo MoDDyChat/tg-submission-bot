@@ -32,6 +32,18 @@ def _reset_runtime_state() -> None:
     if append_module is not None:
         append_module.reset_append_buffers()
 
+    # The Recover guard is a module-level singleton lazily bound to the loop that
+    # first takes it. pytest-asyncio gives every test its own loop, so a lock
+    # left over from a previous test would raise "bound to a different event
+    # loop" in the next one.
+    management_module = sys.modules.get("handlers.moderator.management")
+    if management_module is not None:
+        task = getattr(management_module, "_recover_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+        management_module._recover_lock = None
+        management_module._recover_task = None
+
     scheduler_module = sys.modules.get("services.scheduler")
     if scheduler_module is not None:
         sched = getattr(scheduler_module, "scheduler", None)

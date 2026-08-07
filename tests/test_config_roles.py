@@ -6,8 +6,6 @@ import pytest
 from pydantic import ValidationError
 
 from core.config import Config
-from filters.is_moderator import IsModerator
-from tests.helpers import make_message
 
 
 def _build(**overrides: object) -> Config:
@@ -60,14 +58,3 @@ def test_moderator_id_keeps_the_first_explicit_moderator() -> None:
 def test_config_without_any_ids_is_rejected() -> None:
     with pytest.raises(ValidationError, match="MODERATOR_IDS или ADMIN_IDS"):
         _build(moderator_ids=[], admin_ids=[])
-
-
-# ── the filter sees the merged list ───────────────────────────────
-
-async def test_is_moderator_passes_for_admin_absent_from_moderator_ids(monkeypatch) -> None:
-    cfg = _build(moderator_ids=[111], admin_ids=[999])
-
-    from core import config as cfg_module
-    monkeypatch.setattr(cfg_module.config, "moderator_ids", cfg.moderator_ids)
-
-    assert await IsModerator()(make_message(from_user_id=999)) is True

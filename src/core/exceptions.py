@@ -56,3 +56,35 @@ class MessagesConfigError(MSBotError):
     ``KeyError`` inside a handler's ``.format()`` call."""
 
 
+# ── Roles ──────────────────────────────────────────────────────────
+
+class RoleChangeError(MSBotError):
+    """Base error for role-change invariant violations."""
+
+
+class CannotChangeOwnRoleError(RoleChangeError):
+    """Actor tried to grant or revoke a role on themselves."""
+
+
+class CannotRemoveLastAdminError(RoleChangeError):
+    """Tried to revoke admin rights from the last remaining admin."""
+
+
+class ConfigProtectedRoleError(RoleChangeError):
+    """Tried to remove a role the target has via MODERATOR_IDS/ADMIN_IDS."""
+
+
+class RoleAlreadyGrantedError(RoleChangeError):
+    """Tried to grant a role the target already holds."""
+
+
+class RoleTargetBannedError(RoleChangeError):
+    """Tried to grant a role to a banned user."""
+
+
+# ── Ban ────────────────────────────────────────────────────────────
+
+class CannotBanModeratorError(MSBotError):
+    """Tried to ban a user who still holds a moderator or admin role."""
+
+

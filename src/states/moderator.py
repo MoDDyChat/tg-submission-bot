@@ -11,6 +11,9 @@ class ModeratorReview(StatesGroup):
     management_preset_section = State()
     management_preset_detail = State()
     management_banned_users = State()
+    management_moderators = State()
+    management_moderator_detail = State()
+    management_enter_moderator_id = State()
     management_add_section_label = State()
     management_edit_section_label = State()
     management_add_preset_label = State()
@@ -43,6 +46,9 @@ STATE_CATEGORY: dict[str, Literal["management", "viewing", "sub"]] = {
     ModeratorReview.management_preset_section.state: "management",
     ModeratorReview.management_preset_detail.state: "management",
     ModeratorReview.management_banned_users.state: "management",
+    ModeratorReview.management_moderators.state: "management",
+    ModeratorReview.management_moderator_detail.state: "management",
+    ModeratorReview.management_enter_moderator_id.state: "management",
     ModeratorReview.management_add_section_label.state: "management",
     ModeratorReview.management_edit_section_label.state: "management",
     ModeratorReview.management_add_preset_label.state: "management",

@@ -38,8 +38,16 @@ def integration_db_url() -> str:
     return url
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 async def integration_engine(integration_db_url: str) -> AsyncEngine:
+    """Function-scoped on purpose.
+
+    pytest-asyncio runs every test in its own event loop (the default
+    ``asyncio_default_fixture_loop_scope``), while asyncpg connections are bound
+    to the loop that opened them. A session-scoped engine would keep a pool tied
+    to the first test's loop and every later test would blow up with
+    ``RuntimeError: Event loop is closed``.
+    """
     engine = create_async_engine(integration_db_url, pool_pre_ping=True)
     yield engine
     await engine.dispose()

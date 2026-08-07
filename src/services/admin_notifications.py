@@ -50,6 +50,7 @@ async def notify_admins(
     actor: User,
     action_text: str,
     exclude_actor: bool = True,
+    exclude_telegram_ids: set[int] | None = None,
 ) -> None:
     """Send *action_text* as a DM to every admin user.
 
@@ -65,10 +66,16 @@ async def notify_admins(
         actor: The moderator who performed the action.
         action_text: Pre-formatted HTML notification text.
         exclude_actor: When ``True`` (default), skip sending to *actor* themselves.
+        exclude_telegram_ids: Admins to skip because the caller delivers them a
+            different, more specific message (e.g. the target of a role change
+            gets a second-person notice instead of the third-person audit line).
     """
+    skip_ids = exclude_telegram_ids or set()
     admins = await get_admin_users(session)
     for admin in admins:
         if exclude_actor and admin.telegram_id == actor.telegram_id:
+            continue
+        if admin.telegram_id in skip_ids:
             continue
         for attempt in range(1, _NOTIFY_MAX_ATTEMPTS + 1):
             try:

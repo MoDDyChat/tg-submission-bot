@@ -21,6 +21,7 @@ from .ban import router as ban_router
 from .edit import router as edit_router
 from .management import router as management_router, show_moderator_home
 from .media import router as media_router
+from .moderators import router as moderators_router
 from .publish_now import router as publish_now_router
 from .reject import router as reject_router
 from .recover import router as recover_router
@@ -37,6 +38,7 @@ router.callback_query.filter(IsModerator())
 from handlers.tag_wizard import router as tag_wizard_router  # noqa: E402
 
 router.include_router(management_router)
+router.include_router(moderators_router)
 router.include_router(submit_router)
 router.include_router(tag_wizard_router)
 router.include_router(recover_router)
@@ -83,6 +85,7 @@ async def _cancel_management(
     mid = db_user.telegram_id
     await edit_lock.release_lock(session, "management", "presets", mid)
     await edit_lock.release_lock(session, "management", "banned", mid)
+    await edit_lock.release_lock(session, "management", "moderators", mid)
     await show_moderator_home(message, state)
 
 

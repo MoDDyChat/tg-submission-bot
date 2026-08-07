@@ -63,7 +63,14 @@ async def test_get_or_create_user_upserts_existing_row(db_session) -> None:
     )
     await db_session.commit()
 
-    refreshed = await db_session.scalar(select(User).where(User.id == created_user.id))
+    # the upsert goes through Core INSERT ... ON CONFLICT, so the instance kept
+    # in the identity map is not refreshed automatically (expire_on_commit=False)
+    # — populate_existing forces the loaded row to overwrite it
+    refreshed = await db_session.scalar(
+        select(User)
+        .where(User.id == created_user.id)
+        .execution_options(populate_existing=True)
+    )
 
     assert is_new is True
     assert is_new_second is False

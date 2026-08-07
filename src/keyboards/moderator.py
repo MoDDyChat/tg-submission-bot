@@ -4,7 +4,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from db.models import TagPresetEntry
 from db.models import TagPresetSection
 from db.models import User
-from keyboards.callbacks import ConfirmCB, ManagementCB, MediaCB, SubmissionCB, TagPresetCB, UnbanCB
+from keyboards.callbacks import ConfirmCB, ManagementCB, MediaCB, ModeratorCB, SubmissionCB, TagPresetCB, UnbanCB
 
 
 def submission_actions_kb(sub_id: int, status: str = "pending") -> InlineKeyboardMarkup:
@@ -102,6 +102,99 @@ def banned_users_kb(users: list[User]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def moderators_list_kb(users: list[User]) -> InlineKeyboardMarkup:
+    """One button per moderator; opens the moderator's card."""
+    rows = []
+    for user in users:
+        label = f"@{user.username}" if user.username else user.full_name
+        rows.append([InlineKeyboardButton(
+            text=label,
+            callback_data=ModeratorCB(action="view", user_id=user.id).pack(),
+        )])
+    rows.append([InlineKeyboardButton(
+        text=msg.BTN_ADD_MODERATOR,
+        callback_data=ModeratorCB(action="add").pack(),
+    )])
+    rows.append([InlineKeyboardButton(
+        text=msg.BTN_BACK,
+        callback_data=ManagementCB(action="menu").pack(),
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def moderator_add_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=msg.BTN_INVITE_LINK,
+            callback_data=ModeratorCB(action="invite").pack(),
+        )],
+        [InlineKeyboardButton(
+            text=msg.BTN_ENTER_ID,
+            callback_data=ModeratorCB(action="enter_id").pack(),
+        )],
+        [InlineKeyboardButton(
+            text=msg.BTN_BACK,
+            callback_data=ModeratorCB(action="list").pack(),
+        )],
+    ])
+
+
+def moderator_card_kb(
+    user: User,
+    *,
+    can_revoke_admin: bool,
+    can_remove: bool,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if user.is_admin:
+        if can_revoke_admin:
+            rows.append([InlineKeyboardButton(
+                text=msg.BTN_REVOKE_ADMIN,
+                callback_data=ModeratorCB(action="revoke_admin", user_id=user.id).pack(),
+            )])
+    else:
+        rows.append([InlineKeyboardButton(
+            text=msg.BTN_GRANT_ADMIN,
+            callback_data=ModeratorCB(action="grant_admin", user_id=user.id).pack(),
+        )])
+    if can_remove:
+        rows.append([InlineKeyboardButton(
+            text=msg.BTN_REMOVE_MODERATOR,
+            callback_data=ModeratorCB(action="remove", user_id=user.id).pack(),
+        )])
+    rows.append([InlineKeyboardButton(
+        text=msg.BTN_BACK,
+        callback_data=ModeratorCB(action="list").pack(),
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def moderator_remove_confirm_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=msg.BTN_DELETE_CONFIRM,
+            callback_data=ModeratorCB(action="confirm_remove", user_id=user_id).pack(),
+        )],
+        [InlineKeyboardButton(
+            text=msg.BTN_BACK,
+            callback_data=ModeratorCB(action="view", user_id=user_id).pack(),
+        )],
+    ])
+
+
+def moderator_revoke_confirm_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=msg.BTN_DELETE_CONFIRM,
+            callback_data=ModeratorCB(action="confirm_revoke", user_id=user_id).pack(),
+        )],
+        [InlineKeyboardButton(
+            text=msg.BTN_BACK,
+            callback_data=ModeratorCB(action="view", user_id=user_id).pack(),
+        )],
+    ])
+
+
 def confirm_schedule_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -152,6 +245,10 @@ def management_menu_kb(*, is_admin: bool = False) -> InlineKeyboardMarkup:
         )],
     ]
     if is_admin:
+        rows.append([InlineKeyboardButton(
+            text=msg.BTN_MODERATORS,
+            callback_data=ManagementCB(action="moderators").pack(),
+        )])
         rows.append([InlineKeyboardButton(
             text=msg.BTN_RECOVER_POSTS,
             callback_data=ManagementCB(action="recover").pack(),

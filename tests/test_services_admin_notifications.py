@@ -114,6 +114,22 @@ async def test_notify_admins_includes_actor_when_exclude_false() -> None:
     assert bot.send_message.await_count == 2
 
 
+async def test_notify_admins_skips_excluded_telegram_ids() -> None:
+    bot = AsyncMock()
+    session = AsyncMock()
+    actor = make_user(telegram_id=10, username="self_admin")
+
+    admins = [_make_admin(11, "other_admin"), _make_admin(12, "excluded_admin")]
+    with patch.object(admin_notifications, "get_admin_users", AsyncMock(return_value=admins)):
+        await admin_notifications.notify_admins(
+            bot, session, actor=actor, action_text="action",
+            exclude_telegram_ids={12},
+        )
+
+    bot.send_message.assert_awaited_once()
+    assert bot.send_message.call_args.kwargs["chat_id"] == 11
+
+
 # ── telegram error is swallowed per-admin ────────────────────────
 
 async def test_notify_admins_swallows_telegram_error() -> None:

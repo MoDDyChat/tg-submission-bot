@@ -12,7 +12,7 @@ from aiogram.types import BotCommand
 from core.config import config
 from core.logging import create_logger, get_logger
 from db.session import check_db_connection, run_migrations, session_factory, shutdown_db
-from handlers import common, contact, errors, moderator, service_messages, viewer
+from handlers import common, contact, errors, moderator, moderator_invite, service_messages, viewer
 from middlewares.auth import AuthMiddleware
 from middlewares.db import DbSessionMiddleware
 from middlewares.rate_limit import ThrottleMiddleware
@@ -20,6 +20,7 @@ from middlewares.silent_chats import SilentChatsMiddleware
 from services.health import TelegramWatchdog, start_health_server
 from services.scheduler import (
     cleanup_edit_locks_job,
+    cleanup_moderator_invites_job,
     create_scheduler,
     prune_throttle_job,
     queue_render_job,
@@ -36,45 +37,75 @@ from services.topics_queue import render_queue as _render_queue, render_schedule
 logger = get_logger(__name__)
 
 
-async def sync_admin_flags() -> None:
-    """Delta-sync ``users.is_admin`` from ``config.admin_ids`` at startup.
+async def bootstrap_roles() -> None:
+    """Apply ``MODERATOR_IDS``/``ADMIN_IDS`` from config at startup, additively.
 
-    Fetches the current set of admin users from DB, then issues targeted
-    UPDATE statements only for the changed rows.
+    Upserts a ``users`` row for every configured telegram_id with
+    ``is_moderator=True`` (admins also get ``is_admin=True``), creating rows
+    with a placeholder full_name for people who have never written to the bot.
+    Never removes flags: the DB is the source of truth at runtime, config is
+    the break-glass bootstrap list.
     """
-    from sqlalchemy import select, update as sa_update
+    from sqlalchemy import func, literal_column
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+    from core.messages import ROLE_BOOTSTRAP_PLACEHOLDER_NAME
     from db.models import User
     from db.session import session_factory
 
     async with session_factory() as session:
-        result = await session.execute(
-            select(User.telegram_id).where(User.is_admin.is_(True))
-        )
-        current_admin_ids: set[int] = {row[0] for row in result.all()}
+        created = 0
+        flags_set = 0
 
-        desired: set[int] = set(config.admin_ids)
-        to_add = desired - current_admin_ids
-        to_remove = current_admin_ids - desired
+        for telegram_id in config.moderator_ids:
+            stmt = (
+                pg_insert(User)
+                .values(
+                    telegram_id=telegram_id,
+                    username=None,
+                    full_name=ROLE_BOOTSTRAP_PLACEHOLDER_NAME,
+                    is_moderator=True,
+                )
+                .on_conflict_do_update(
+                    index_elements=[User.telegram_id],
+                    set_=dict(is_moderator=True, updated_at=func.now()),
+                )
+                .returning(literal_column("(xmax::text::bigint = 0)").label("is_new"))
+            )
+            result = await session.execute(stmt)
+            if result.scalar_one():
+                created += 1
+            flags_set += 1
 
-        if to_add:
-            await session.execute(
-                sa_update(User)
-                .where(User.telegram_id.in_(to_add))
-                .values(is_admin=True)
+        # admin_ids are already merged into moderator_ids by the config model
+        # validator, so is_moderator is handled above; here we only ensure the
+        # admin flag itself.
+        for telegram_id in config.admin_ids:
+            stmt = (
+                pg_insert(User)
+                .values(
+                    telegram_id=telegram_id,
+                    username=None,
+                    full_name=ROLE_BOOTSTRAP_PLACEHOLDER_NAME,
+                    is_moderator=True,
+                    is_admin=True,
+                )
+                .on_conflict_do_update(
+                    index_elements=[User.telegram_id],
+                    set_=dict(is_admin=True, updated_at=func.now()),
+                )
+                .returning(literal_column("(xmax::text::bigint = 0)").label("is_new"))
             )
-        if to_remove:
-            await session.execute(
-                sa_update(User)
-                .where(User.telegram_id.in_(to_remove))
-                .values(is_admin=False)
-            )
-        if to_add or to_remove:
-            await session.commit()
+            result = await session.execute(stmt)
+            if result.scalar_one():
+                created += 1
+            flags_set += 1
+
+        await session.commit()
 
     logger.info(
-        "sync_admin_flags: добавлено %d, снято %d is_admin флагов",
-        len(to_add), len(to_remove),
+        "bootstrap_roles: создано строк %d, выставлено флагов %d",
+        created, flags_set,
     )
 
 
@@ -106,9 +137,12 @@ def _create_dispatcher(throttle: ThrottleMiddleware) -> Dispatcher:
     dp.update.outer_middleware(AuthMiddleware())
 
     # Routers: service_messages first (suppresses forum noise),
-    # then moderator so its /start deep link takes priority
+    # then the moderator invite deep link (its invitee has no role yet and the
+    # moderator router is fully IsModerator-filtered), then moderator so its
+    # /start deep link takes priority over common.cmd_start
     dp.include_routers(
         service_messages.router,
+        moderator_invite.router,
         moderator.router,
         common.router,
         contact.router,
@@ -191,7 +225,7 @@ async def main() -> None:
         await _render_queue(bot, legend_session, force_reconcile=True)
         await legend_session.commit()
 
-    await sync_admin_flags()
+    await bootstrap_roles()
 
     import services.scheduler as _sched_mod
     _sched_mod.scheduler = create_scheduler()
@@ -258,6 +292,16 @@ async def main() -> None:
         coalesce=True,
         args=[throttle],
     )
+    _sched_mod.scheduler.add_job(
+        cleanup_moderator_invites_job,
+        "interval",
+        hours=24,
+        id="cleanup_moderator_invites",
+        replace_existing=True,
+        misfire_grace_time=3600,
+        coalesce=True,
+        args=[session_factory],
+    )
     await recover_scheduled_jobs(bot, session_factory)
 
     # Health-мониторинг: watchdog Telegram API + HTTP /health и /metrics
@@ -283,6 +327,11 @@ async def main() -> None:
             await health_runner.cleanup()
         except Exception:
             logger.exception("Ошибка при остановке health-сервера")
+        try:
+            from handlers.moderator.management import cancel_recover_task
+            await cancel_recover_task()
+        except Exception:
+            logger.exception("Ошибка при отмене фонового Recover")
         try:
             shutdown_scheduler()
         except Exception:

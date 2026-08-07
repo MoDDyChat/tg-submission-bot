@@ -4,6 +4,7 @@ from sqlalchemy import func, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.exceptions import CannotBanModeratorError
 from db.models import User
 
 
@@ -16,8 +17,11 @@ async def get_or_create_user(
 ) -> tuple[User, bool]:
     """Upsert user. Returns ``(user, is_new)``.
 
-    *is_admin* is always written on upsert so that the DB flag stays in sync
-    with the ``config.admin_ids`` list on every user interaction.
+    On conflict only ``username``/``full_name`` are refreshed —
+    ``is_admin``/``is_moderator`` are deliberately NOT touched: those flags are
+    owned by ``bootstrap_roles()`` at startup and by the roles service at
+    runtime, the DB is the source of truth rather than the config. The
+    ``is_admin`` parameter applies on the INSERT path only (fresh rows).
 
     ``is_new`` is derived from ``xmax = 0``: PostgreSQL sets xmax to 0 for
     freshly inserted rows and to the updating transaction XID for updated ones,
@@ -36,7 +40,8 @@ async def get_or_create_user(
             set_=dict(
                 username=username,
                 full_name=full_name,
-                # is_admin is managed exclusively by sync_admin_flags() at startup
+                # is_admin/is_moderator are owned by bootstrap_roles() and the
+                # roles service — never touched here on conflict
                 updated_at=func.now(),
             ),
         )
@@ -51,6 +56,17 @@ async def get_or_create_user(
 
 
 async def ban_user(session: AsyncSession, user_id: int, reason: str) -> None:
+    """Ban *user_id* unless they still hold a moderator/admin role.
+
+    The row is locked ``FOR UPDATE`` and re-read so a concurrent role grant
+    cannot slip past the handler's pre-check and leave a user both banned and
+    a moderator.
+    """
+    target = await session.get(
+        User, user_id, with_for_update=True, populate_existing=True,
+    )
+    if target is not None and (target.is_moderator or target.is_admin):
+        raise CannotBanModeratorError()
     stmt = (
         update(User)
         .where(User.id == user_id)

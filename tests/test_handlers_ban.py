@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import core.messages as msg
+from core.exceptions import CannotBanModeratorError
 from handlers.moderator import ban
 from states.moderator import ModeratorReview
 from tests.helpers import FakeState, make_callback, make_message, make_submission, make_user
@@ -40,6 +41,22 @@ async def test_ban_author_start_rejects_already_banned_user(monkeypatch) -> None
     await ban.handle_ban_author_start(callback, AsyncMock(sub_id=1), session, state)
 
     callback.answer.assert_awaited_once_with(msg.USER_ALREADY_BANNED, show_alert=True)
+    assert state.state is None  # state not changed
+
+
+async def test_ban_author_start_rejects_moderator_target(monkeypatch) -> None:
+    session = AsyncMock()
+    state = FakeState()
+    moderator = make_user(user_id=9, telegram_id=909)
+    moderator.is_moderator = True
+    sub = make_submission(sub_id=3, user=moderator, status="pending")
+    callback = make_callback(from_user_id=1)
+
+    monkeypatch.setattr(ban, "get_submission_with_user", AsyncMock(return_value=sub))
+
+    await ban.handle_ban_author_start(callback, AsyncMock(sub_id=3), session, state)
+
+    callback.answer.assert_awaited_once_with(msg.CANNOT_BAN_MODERATOR, show_alert=True)
     assert state.state is None  # state not changed
 
 
@@ -79,6 +96,51 @@ async def test_ban_reason_bans_user_and_notifies(monkeypatch) -> None:
 
     ban_user_mock.assert_awaited_once_with(session, 9, "Spam")
     send_view.assert_awaited_once()
+
+
+async def test_ban_reason_rejects_moderator_target(monkeypatch) -> None:
+    session = AsyncMock()
+    state = FakeState({"sub_id": 5, "ban_user_id": 9, "ban_user_display": "@artist"})
+    db_user = make_user(user_id=2)
+    message = make_message(text="Spam")
+    ban_user_mock = AsyncMock()
+
+    moderator = make_user(user_id=9, telegram_id=909)
+    moderator.is_moderator = True
+    sub = make_submission(sub_id=5, user=moderator, status="pending")
+
+    monkeypatch.setattr(ban.edit_lock, "extend_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(ban, "ban_user", ban_user_mock)
+    monkeypatch.setattr(ban, "get_submission_with_user", AsyncMock(return_value=sub))
+
+    await ban.handle_ban_reason(message, session, state, db_user)
+
+    ban_user_mock.assert_not_awaited()
+    message.answer.assert_awaited_once_with(msg.BAN_TARGET_IS_MODERATOR)
+    assert state.cleared is False  # lock kept, moderator stays in the post card
+
+
+async def test_ban_reason_handles_concurrent_grant_race(monkeypatch) -> None:
+    """ban_user's row-lock re-check caught a moderator flag the pre-check missed."""
+    session = AsyncMock()
+    state = FakeState({"sub_id": 5, "ban_user_id": 9, "ban_user_display": "@artist"})
+    db_user = make_user(user_id=2)
+    message = make_message(text="Spam")
+
+    sub = make_submission(sub_id=5, status="pending")
+    monkeypatch.setattr(ban.edit_lock, "extend_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        ban, "ban_user", AsyncMock(side_effect=CannotBanModeratorError()),
+    )
+    monkeypatch.setattr(ban, "get_submission_with_user", AsyncMock(return_value=sub))
+    notify = AsyncMock()
+    monkeypatch.setattr(ban.admin_notifications, "notify_admins", notify)
+
+    await ban.handle_ban_reason(message, session, state, db_user)
+
+    notify.assert_not_awaited()
+    message.answer.assert_awaited_once_with(msg.BAN_TARGET_IS_MODERATOR)
+    assert state.cleared is False
 
 
 async def test_ban_reason_aborts_on_lock_lost(monkeypatch) -> None:

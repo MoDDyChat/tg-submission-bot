@@ -27,6 +27,9 @@ Optimistic locks (edit locks) prevent two moderators from editing the same resou
 | `submission` | `str(submission.id)` | Viewing/editing a specific post | `config.edit_lock_ttl_seconds` (default 300s) |
 | `management` | `presets` | CRUD on tag sections and presets | `config.edit_lock_ttl_seconds` (default 300s) |
 | `management` | `banned` | Banned-user list + unban | `config.edit_lock_ttl_seconds` (default 300s) |
+| `management` | `moderators` | Moderator roster (grant/revoke roles, invites) | `config.edit_lock_ttl_seconds` (default 300s) |
+
+Locks are **forcibly released** only when a moderator is fully demoted: `remove_moderator()` calls `release_moderator_locks()`, which deletes every lock held by that user — both `submission` locks (keyed on `moderator_id = User.id`) and `management` locks (keyed on `moderator_id = telegram_id`). The affected submission cards are then repainted in their own short sessions after the role-change transaction commits (see `services/roles.py`, `repaint_released_cards`). `revoke_admin()` leaves the target's locks untouched — the user remains a moderator, so their ongoing edit sessions keep working.
 
 ---
 
@@ -87,16 +90,17 @@ APScheduler cleanup_edit_locks_job:
 ### management lock
 
 ```
-handle_open_presets / handle_open_banned
-  → acquire_lock("management", "presets"|"banned", mod_id, ttl=300)
+handle_presets_menu / handle_banned_users / handle_moderators_menu
+  → acquire_lock("management", "presets"|"banned"|"moderators", mod_id, ttl=300)
   → if False → "Раздел сейчас редактирует @other" ("This section is currently being edited by @other")
 
-Every CRUD callback (add/edit/delete preset, add/edit/delete section, unban):
-  → extend_lock("management", "presets"|"banned", mod_id, ttl=300)
+Every CRUD callback (add/edit/delete preset, add/edit/delete section, unban,
+roster list/card/add/invite):
+  → extend_lock("management", "presets"|"banned"|"moderators", mod_id, ttl=300)
   → if False → alert "Сессия истекла, войдите снова" ("Session expired, please re-enter")
 
-handle_close_management:
-  → release_lock("management", "presets"|"banned", mod_id)
+handle_close_management / handle_home / _cancel_management:
+  → release_lock("management", "presets"|"banned"|"moderators", mod_id)
 ```
 
 ---
@@ -127,7 +131,7 @@ The behavior of the `/cancel` command depends on the current FSM state:
 | State | `/cancel` behavior |
 |-----------|---------------------|
 | No state | "Нет активного действия" ("No active action") |
-| management_* | Releases `management/presets` and `management/banned` → returns to the home screen |
+| management_* | Releases `management/presets`, `management/banned` and `management/moderators` → returns to the home screen |
 | `viewing_post` | Releases `submission/<id>` + updates the card → FSM is reset |
 | editing_*, picking_*, confirm_* (sub-state) | Extends the lock: if we still hold it — deletes sub-state messages, returns to `viewing_post`; if the lock was lost — FSM is reset, `MODERATOR_LOCK_LOST` message |
 

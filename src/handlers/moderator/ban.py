@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import core.messages as msg
 from core.config import config
+from core.exceptions import CannotBanModeratorError
 from core.logging import get_logger
 from db.models import User
 from db.queries import ban_user, get_submission_with_user
@@ -35,7 +36,7 @@ async def handle_ban_author_start(
     if sub is None:
         await callback.answer(msg.SUBMISSION_NOT_FOUND, show_alert=True)
         return
-    if sub.user.telegram_id in config.moderator_ids:
+    if sub.user.is_moderator or sub.user.is_admin:
         await callback.answer(msg.CANNOT_BAN_MODERATOR, show_alert=True)
         return
     if sub.user.is_banned:
@@ -69,6 +70,7 @@ async def handle_ban_reason(
     reason_html = get_html_text(message)
 
     sub_id = data.get("sub_id")
+    sub = None
     if sub_id:
         ok = await edit_lock.extend_lock(
             session, "submission", str(sub_id),
@@ -79,7 +81,18 @@ async def handle_ban_reason(
             await state.clear()
             return
 
-    await ban_user(session, user_id, reason)
+        sub = await get_submission_with_user(session, sub_id)
+        if sub is not None and (sub.user.is_moderator or sub.user.is_admin):
+            await message.answer(msg.BAN_TARGET_IS_MODERATOR)
+            return
+
+    try:
+        await ban_user(session, user_id, reason)
+    except CannotBanModeratorError:
+        # Lost the race against a concurrent role grant: the row lock re-check
+        # inside ban_user caught a moderator/admin flag the pre-check missed.
+        await message.answer(msg.BAN_TARGET_IS_MODERATOR)
+        return
     logger.info("Пользователь id:%d заблокирован. Причина: %s", user_id, reason)
 
     await admin_notifications.notify_admins(
@@ -92,11 +105,9 @@ async def handle_ban_reason(
         ),
     )
 
-    if sub_id:
-        sub = await get_submission_with_user(session, sub_id)
-        if sub is not None:
-            await topic_notifications.notify_banned(message.bot, session, sub, db_user, reason)
-            await topics.request_topic_title_sync(session, sub.user.id)
+    if sub is not None:
+        await topic_notifications.notify_banned(message.bot, session, sub, db_user, reason)
+        await topics.request_topic_title_sync(session, sub.user.id)
 
     if prompt_id := data.get("prompt_message_id"):
         try:
