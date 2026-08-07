@@ -35,3 +35,12 @@ def validate_caption_length(tags: list[str], description: str | None, *, has_med
     """Check if composed caption fits Telegram's limit (1024 for media, 4096 for text-only)."""
     limit = MAX_MEDIA_CAPTION if has_media else MAX_TEXT_CAPTION
     return len(strip_html_for_length(compose_caption(tags, description))) <= limit
+
+
+def available_caption_length(tags: list[str], *, has_media: bool = True) -> int:
+    """Сколько plain-text символов осталось под описание с учётом тегов."""
+    limit = MAX_MEDIA_CAPTION if has_media else MAX_TEXT_CAPTION
+    if not tags:
+        return limit
+    occupied = len(strip_html_for_length(compose_caption(tags, "x"))) - 1
+    return max(0, limit - occupied)

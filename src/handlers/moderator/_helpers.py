@@ -10,6 +10,7 @@ _TRACKED_MESSAGE_KEYS = (
     "media_message_ids",     # list[int] — album/media preview
     "actions_message_id",    # int — action buttons message
     "prompt_message_id",     # int — edit/reject prompt
+    "caption_copy_message_id",   # int | None — caption copy during editing
     "schedule_message_id",   # int — calendar/time picker
     "wizard_message_id",     # int — tag wizard message
     "management_message_id", # int — moderator home / management menu message

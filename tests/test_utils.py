@@ -37,6 +37,26 @@ def test_validate_caption_length_uses_text_limit_for_text_only_posts() -> None:
     assert tags.validate_caption_length([], "x" * 4097, has_media=False) is False
 
 
+def test_available_caption_length_without_tags_returns_full_limit() -> None:
+    assert tags.available_caption_length([]) == 1024
+    assert tags.available_caption_length([], has_media=False) == 4096
+
+
+def test_available_caption_length_with_tags_subtracts_tags_line_and_separator() -> None:
+    tags_line_len = len(tags.strip_html_for_length(tags.format_tags_line(["One", "Two"])))
+
+    assert tags.available_caption_length(["One", "Two"]) == 1024 - tags_line_len - 2
+    assert tags.available_caption_length(["One", "Two"], has_media=False) == 4096 - tags_line_len - 2
+
+
+def test_available_caption_length_matches_validate_caption_length_boundary() -> None:
+    for tag_list, has_media in (([], True), (["One", "Two"], True), (["One", "Two"], False)):
+        available = tags.available_caption_length(tag_list, has_media=has_media)
+
+        assert tags.validate_caption_length(tag_list, "x" * available, has_media=has_media) is True
+        assert tags.validate_caption_length(tag_list, "x" * (available + 1), has_media=has_media) is False
+
+
 def test_extract_media_info_uses_largest_photo() -> None:
     message = SimpleNamespace(
         photo=make_photo_sizes(("small", "small-uid"), ("large", "large-uid")),

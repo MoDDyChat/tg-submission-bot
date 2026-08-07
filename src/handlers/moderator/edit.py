@@ -14,15 +14,20 @@ from keyboards.callbacks import SubmissionCB
 from services import edit_lock, topic_notifications, topics
 from states.moderator import ModeratorReview
 from utils.html_entities import get_html_text
-from utils.tags import MAX_MEDIA_CAPTION, MAX_TEXT_CAPTION, compose_caption, strip_html_for_length, validate_caption_length
+from utils.tags import (
+    MAX_MEDIA_CAPTION,
+    MAX_TEXT_CAPTION,
+    available_caption_length,
+    compose_caption,
+    strip_html_for_length,
+    validate_caption_length,
+)
 
-from ._helpers import TERMINAL_STATUSES, _send_submission_view
+from ._helpers import TERMINAL_STATUSES, _delete_tracked_messages, _send_submission_view
 
 logger = get_logger(__name__)
 
 router = Router()
-
-MAX_CAPTION_LENGTH = MAX_MEDIA_CAPTION
 
 
 @router.callback_query(SubmissionCB.filter(F.action == "edit_caption"))
@@ -49,8 +54,22 @@ async def handle_edit_caption_start(
         return
 
     await state.set_state(ModeratorReview.editing_caption)
-    prompt = await callback.message.answer(msg.EDIT_CAPTION_PROMPT)
-    await state.update_data(sub_id=callback_data.sub_id, prompt_message_id=prompt.message_id)
+
+    if sub.caption:
+        copy_msg = await callback.message.answer(sub.caption)
+        await state.update_data(
+            sub_id=callback_data.sub_id,
+            caption_copy_message_id=copy_msg.message_id,
+        )
+    else:
+        await state.update_data(sub_id=callback_data.sub_id, caption_copy_message_id=None)
+
+    remaining = available_caption_length(sub.tags or [], has_media=bool(sub.media))
+    prompt_text = (
+        msg.EDIT_CAPTION_PROMPT if sub.caption else msg.EDIT_CAPTION_PROMPT_EMPTY
+    ).format(remaining=remaining)
+    prompt = await callback.message.answer(prompt_text)
+    await state.update_data(prompt_message_id=prompt.message_id)
     await callback.answer()
 
 
@@ -70,6 +89,7 @@ async def handle_edit_caption_text(
         ttl_seconds=config.edit_lock_ttl_seconds,
     )
     if not still_mine:
+        await _delete_tracked_messages(message.bot, message.chat.id, data)
         await state.clear()
         await message.answer(msg.MODERATOR_LOCK_LOST)
         return
@@ -77,18 +97,18 @@ async def handle_edit_caption_text(
     sub = await get_submission_with_user(session, sub_id)
     if sub is None or sub.status in TERMINAL_STATUSES:
         await message.answer(msg.SUBMISSION_NOT_AVAILABLE)
+        await _delete_tracked_messages(message.bot, message.chat.id, data)
         await state.clear()
         return
 
     new_caption = get_html_text(message)
 
     has_media = bool(sub.media)
-    cap_limit = MAX_CAPTION_LENGTH if has_media else MAX_TEXT_CAPTION
+    cap_limit = MAX_MEDIA_CAPTION if has_media else MAX_TEXT_CAPTION
     if not validate_caption_length(sub.tags or [], new_caption, has_media=has_media):
         total = len(strip_html_for_length(compose_caption(sub.tags or [], new_caption)))
         await message.answer(
-            f"Описание с тегами слишком длинное ({total} символов). "
-            f"Максимум — {cap_limit}."
+            msg.EDIT_CAPTION_TOO_LONG.format(total=total, limit=cap_limit, overflow=total - cap_limit)
         )
         return
 
@@ -101,6 +121,14 @@ async def handle_edit_caption_text(
     if prompt_id := data.get("prompt_message_id"):
         try:
             await message.bot.delete_message(message.chat.id, prompt_id)
+        except Exception:
+            pass
+    if copy_id := data.get("caption_copy_message_id"):
+        try:
+            await message.bot.delete_message(message.chat.id, copy_id)
+            # Untrack only after a successful delete, so a failed one stays
+            # visible to _delete_tracked_messages as fallback
+            await state.update_data(caption_copy_message_id=None)
         except Exception:
             pass
     try:

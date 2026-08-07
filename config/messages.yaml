@@ -55,7 +55,8 @@ YOU_ARE_BANNED: |-
 POST_NOT_FOUND_OR_CANCELLED: Пост не найден или был отменён автором.
 CHOOSE_ACTION: 'Выберите действие:'
 EDIT_CAPTION_PROMPT: |-
-  Отправьте новое описание для поста.
+  Текущий текст — в сообщении выше: его можно скопировать, поправить и отправить.
+  Доступно символов: {remaining} (с учётом тегов).
   Или /cancel для отмены.
 TAGS_WIZARD_SECTION: 'Выберите теги из раздела «{section}»:'
 TAGS_WIZARD_SECTION_EMPTY_HINT: |2-
