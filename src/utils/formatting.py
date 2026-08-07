@@ -16,11 +16,15 @@ AUTHOR_NAME_MAX_WIDTH = 18
 _ELLIPSIS = "…"
 _ZWJ = chr(0x200D)
 
-# Bidi isolates. A name carrying strong RTL text (Hebrew, Arabic) reorders
+# Bidi guards. A name carrying strong RTL text (Hebrew, Arabic) reorders
 # everything the line puts after it — the entry number, the "(#id)" and the
-# link all swap places. FSI…PDI confines the reordering to the name itself.
+# link all swap places. FSI…PDI is the correct isolate, but Telegram Desktop
+# ignores it, so the name is additionally fenced with LRM: a strong LTR
+# character every renderer honours, which stops the RTL run from swallowing
+# the neutral text (brackets, digits, arrows) around it.
 _FSI = chr(0x2068)
 _PDI = chr(0x2069)
+_LRM = chr(0x200E)
 _RTL_BIDI_CLASSES = frozenset({"R", "AL", "AN"})
 
 # Blank-looking characters outside the Cc/Cf/whitespace classes: Hangul
@@ -188,10 +192,10 @@ def format_author_name(
 
 
 def _isolate_bidi(text: str) -> str:
-    """Wrap ``text`` in FSI…PDI if it could reorder its surroundings."""
+    """Fence ``text`` off if it could reorder its surroundings."""
     if not any(unicodedata.bidirectional(ch) in _RTL_BIDI_CLASSES for ch in text):
         return text
-    return f"{_FSI}{text}{_PDI}"
+    return f"{_LRM}{_FSI}{text}{_PDI}{_LRM}"
 
 
 def format_submission_preview(

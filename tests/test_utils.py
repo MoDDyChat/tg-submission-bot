@@ -154,11 +154,16 @@ def test_format_author_name_isolates_rtl_names() -> None:
     for rtl in ("סוכר [сахар]", "Nick٩( ᐛ )و"):
         result = formatting.format_author_name(rtl)
 
-        assert result.startswith("⁨") and result.endswith("⁩")
+        # LRM outside the isolate: Telegram Desktop ignores FSI…PDI.
+        assert result.startswith("‎⁨")
+        assert result.endswith("⁩‎")
 
 
 def test_format_author_name_leaves_ltr_names_unwrapped() -> None:
-    assert "⁨" not in formatting.format_author_name("Имя автора🎀")
+    result = formatting.format_author_name("Имя автора🎀")
+
+    assert "⁨" not in result
+    assert "‎" not in result
 
 
 def test_format_author_name_falls_back_for_blank_names() -> None:
