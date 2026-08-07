@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 
@@ -84,6 +87,116 @@ async def test_cmd_start_review_keeps_pending_status_and_syncs_title(monkeypatch
     delete_tracked.assert_awaited_once()
     assert state.cleared is True
     send_view.assert_awaited_once()
+
+
+async def test_cmd_start_review_does_not_re_render_a_just_rendered_post(monkeypatch) -> None:
+    """A re-fired deep link (double tap on the lock indicator) must not duplicate the view."""
+    state = FakeState({"sub_id": 55, "actions_message_id": 3, "view_rendered_at": time.time()})
+    state.state = ModeratorReview.viewing_post.state
+    message = make_message(text="/start review_55")
+    session = AsyncMock()
+    db_user = make_user(user_id=2, telegram_id=202)
+    submission = make_submission(sub_id=55, status="pending")
+
+    delete_tracked = AsyncMock()
+    send_view = AsyncMock(return_value=True)
+    acquire_lock = AsyncMock(return_value=(True, None))
+    monkeypatch.setattr(review, "get_submission_with_user", AsyncMock(return_value=submission))
+    monkeypatch.setattr(review.edit_lock, "acquire_lock", acquire_lock)
+    monkeypatch.setattr(review.topics, "update_submission_card", AsyncMock())
+    monkeypatch.setattr(review.topics, "request_topic_title_sync", AsyncMock())
+    monkeypatch.setattr(review, "_delete_tracked_messages", delete_tracked)
+    monkeypatch.setattr(review, "_send_submission_view", send_view)
+
+    await review.cmd_start_review(message, session, state, db_user)
+
+    acquire_lock.assert_awaited_once()  # the lock is still extended
+    send_view.assert_not_awaited()
+    delete_tracked.assert_not_awaited()
+    assert state.cleared is False
+
+
+async def test_cmd_start_review_re_renders_a_stale_view_of_the_same_post(monkeypatch) -> None:
+    """Re-entering later must still redraw — that is how a lost view is recovered."""
+    state = FakeState(
+        {"sub_id": 55, "actions_message_id": 3, "view_rendered_at": time.time() - 3600}
+    )
+    state.state = ModeratorReview.viewing_post.state
+    message = make_message(text="/start review_55")
+    session = AsyncMock()
+    db_user = make_user(user_id=2, telegram_id=202)
+    submission = make_submission(sub_id=55, status="pending")
+
+    send_view = AsyncMock(return_value=True)
+    delete_tracked = AsyncMock()
+    monkeypatch.setattr(review, "get_submission_with_user", AsyncMock(return_value=submission))
+    monkeypatch.setattr(review.edit_lock, "acquire_lock", AsyncMock(return_value=(True, None)))
+    monkeypatch.setattr(review.topics, "update_submission_card", AsyncMock())
+    monkeypatch.setattr(review.topics, "request_topic_title_sync", AsyncMock())
+    monkeypatch.setattr(review, "_delete_tracked_messages", delete_tracked)
+    monkeypatch.setattr(review, "_send_submission_view", send_view)
+
+    await review.cmd_start_review(message, session, state, db_user)
+
+    delete_tracked.assert_awaited_once()
+    send_view.assert_awaited_once()
+
+
+async def test_cmd_start_review_re_renders_when_another_post_is_open(monkeypatch) -> None:
+    state = FakeState({"sub_id": 12, "actions_message_id": 3, "view_rendered_at": time.time()})
+    state.state = ModeratorReview.viewing_post.state
+    message = make_message(text="/start review_55")
+    session = AsyncMock()
+    db_user = make_user(user_id=2, telegram_id=202)
+    submission = make_submission(sub_id=55, status="pending")
+
+    send_view = AsyncMock(return_value=True)
+    monkeypatch.setattr(review, "get_submission_with_user", AsyncMock(return_value=submission))
+    monkeypatch.setattr(review.edit_lock, "acquire_lock", AsyncMock(return_value=(True, None)))
+    monkeypatch.setattr(review.topics, "update_submission_card", AsyncMock())
+    monkeypatch.setattr(review.topics, "request_topic_title_sync", AsyncMock())
+    monkeypatch.setattr(review, "_delete_tracked_messages", AsyncMock())
+    monkeypatch.setattr(review, "_send_submission_view", send_view)
+
+    await review.cmd_start_review(message, session, state, db_user)
+
+    send_view.assert_awaited_once()
+
+
+async def test_cmd_start_review_serializes_concurrent_deep_links(monkeypatch) -> None:
+    """Two deep links racing while the first album is still uploading render once."""
+    state = FakeState()
+    message = make_message(text="/start review_55")
+    session = AsyncMock()
+    db_user = make_user(user_id=2, telegram_id=202)
+    submission = make_submission(sub_id=55, status="pending")
+
+    async def slow_render(msg_, session_, sub_id_, state_) -> bool:
+        # Mimics render_submission_view: state is written first, message ids only
+        # after Telegram accepted the album.
+        await state_.set_state(ModeratorReview.viewing_post)
+        await state_.update_data(sub_id=sub_id_)
+        await asyncio.sleep(0.05)
+        await state_.update_data(actions_message_id=99)
+        return True
+
+    send_view = AsyncMock(side_effect=slow_render)
+    delete_tracked = AsyncMock()
+    monkeypatch.setattr(review, "get_submission_with_user", AsyncMock(return_value=submission))
+    monkeypatch.setattr(review.edit_lock, "acquire_lock", AsyncMock(return_value=(True, None)))
+    monkeypatch.setattr(review.topics, "update_submission_card", AsyncMock())
+    monkeypatch.setattr(review.topics, "request_topic_title_sync", AsyncMock())
+    monkeypatch.setattr(review, "_delete_tracked_messages", delete_tracked)
+    monkeypatch.setattr(review, "_send_submission_view", send_view)
+    review._render_locks.pop(message.chat.id, None)
+
+    await asyncio.gather(
+        review.cmd_start_review(message, session, state, db_user),
+        review.cmd_start_review(message, session, state, db_user),
+    )
+
+    assert send_view.await_count == 1
+    delete_tracked.assert_awaited_once()
 
 
 async def test_schedule_confirm_yes_rejects_past_time_and_returns_to_minutes(monkeypatch) -> None:
@@ -251,3 +364,21 @@ async def test_handle_noop_shows_lock_owner_name(monkeypatch) -> None:
         msg.LOCK_NOOP_HELD_BY.format(mod="@mod_user"), show_alert=True
     )
     callback.answer.assert_awaited_once()
+
+
+async def test_handle_noop_redirects_lock_owner_to_bot_chat(monkeypatch) -> None:
+    callback = make_callback(message=make_message())
+    callback.message.message_id = 55
+    callback.bot.me = AsyncMock(return_value=SimpleNamespace(username="arts_bot"))
+    session = AsyncMock()
+    submission = make_submission(sub_id=3, status="pending")
+    lock = AsyncMock()
+    lock.moderator_id = 7
+    db_user = make_user(user_id=7, telegram_id=101, username="mod_user")
+
+    monkeypatch.setattr("handlers.moderator.get_submission_by_topic_card_id", AsyncMock(return_value=submission))
+    monkeypatch.setattr(edit_lock, "get_active_lock", AsyncMock(return_value=lock))
+
+    await handle_noop(callback, session, db_user)
+
+    callback.answer.assert_awaited_once_with(url="https://t.me/arts_bot?start=review_3")

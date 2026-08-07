@@ -1,5 +1,8 @@
 """Moderator: review start (deep link /start) and close handlers."""
 
+import asyncio
+import time
+
 from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
@@ -13,6 +16,7 @@ from db.models import User
 from db.queries import get_submission_with_user, get_user_by_id
 from keyboards.callbacks import SubmissionCB
 from services import edit_lock, topics
+from states.moderator import ModeratorReview
 
 from ._helpers import TERMINAL_STATUSES, _delete_tracked_messages, _send_submission_view
 from .management import show_moderator_home
@@ -20,6 +24,19 @@ from .management import show_moderator_home
 logger = get_logger(__name__)
 
 router = Router()
+
+# Rendering a submission view is "delete the previously tracked messages, then send
+# new ones and record their ids" — and the ids are only known once Telegram has
+# accepted an album that may take seconds to upload. Two concurrent renders in the
+# same chat would therefore both read an id-less state and leave a duplicate view
+# behind, so the whole cleanup+render section is serialized per chat.
+_render_locks: dict[int, asyncio.Lock] = {}
+
+# A second deep link that lands within this window of a finished render is a double
+# tap on the topic card's lock indicator, not a request to redraw: skip it so the
+# view does not visibly flicker. Later re-entries still redraw — that is how a
+# moderator recovers a view whose messages are gone.
+_RENDER_DEDUP_SECONDS = 10.0
 
 
 @router.message(CommandStart())
@@ -71,11 +88,26 @@ async def cmd_start_review(
     await topics.update_submission_card(message.bot, session, sub)
     # Reflect the active lock in the topic title ([РЕДАКТИРУЕТСЯ]) right away.
     await topics.request_topic_title_sync(session, sub.user.id)
+    await session.commit()
 
-    data = await state.get_data()
-    await _delete_tracked_messages(message.bot, message.chat.id, data)
-    await state.clear()
-    await _send_submission_view(message, session, sub_id, state)
+    lock = _render_locks.setdefault(message.chat.id, asyncio.Lock())
+    async with lock:
+        data = await state.get_data()
+        rendered_at = data.get("view_rendered_at") or 0
+        if (
+            data.get("sub_id") == sub_id
+            and await state.get_state() == ModeratorReview.viewing_post.state
+            and time.time() - rendered_at < _RENDER_DEDUP_SECONDS
+        ):
+            # The lock indicator on the topic card sends its holder back here, and
+            # Telegram re-fires the deep link on a double tap — don't redraw.
+            logger.debug("Пост #%d только что отрисован — повторный рендер пропущен", sub_id)
+            return
+
+        await _delete_tracked_messages(message.bot, message.chat.id, data)
+        await state.clear()
+        await _send_submission_view(message, session, sub_id, state)
+        await state.update_data(view_rendered_at=time.time())
 
 
 @router.callback_query(SubmissionCB.filter(F.action == "close"))

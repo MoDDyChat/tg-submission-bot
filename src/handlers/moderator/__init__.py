@@ -58,14 +58,29 @@ router.include_router(author_card_router)
 async def handle_noop(
     callback: CallbackQuery,
     session: AsyncSession,
+    db_user: User | None = None,
 ) -> None:
-    """Inform the moderator who holds the lock on the submission they clicked."""
+    """Handle a click on the "being edited" indicator of a topic card.
+
+    The lock holder is sent back to their DM with the bot (``answerCallbackQuery``
+    accepts ``t.me/<bot>?start=...`` links); everyone else just gets the alert
+    telling them who is editing the post right now.
+    """
     lock_owner_text = ""
     if callback.message:
         sub = await get_submission_by_topic_card_id(session, callback.message.message_id)
         if sub is not None:
             active = await edit_lock.get_active_lock(session, "submission", str(sub.id))
             if active:
+                if db_user is not None and active.moderator_id == db_user.id:
+                    bot_username = (await callback.bot.me()).username or ""
+                    if bot_username:
+                        await callback.answer(
+                            url=f"https://t.me/{bot_username}?start=review_{sub.id}"
+                        )
+                        return
+                    await callback.answer(msg.LOCK_NOOP_SELF, show_alert=True)
+                    return
                 owner = await get_user_by_id(session, active.moderator_id)
                 if owner and owner.username:
                     owner_name = f"@{owner.username}"

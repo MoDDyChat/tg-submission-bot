@@ -156,4 +156,17 @@ caption editing, scheduling) would redraw a locked post as free — with the
 The `handle_noop` handler in `handlers/moderator/__init__.py`:
 1. Finds the submission by `topic_card_message_id == callback.message.message_id`
 2. Gets the active lock via `edit_lock.get_active_lock`
-3. Responds with `callback.answer(LOCK_NOOP_HELD_BY.format(mod=...), show_alert=True)`
+3. **If the clicker holds the lock** (`active.moderator_id == db_user.id`) — answers with
+   `callback.answer(url="https://t.me/<bot>?start=review_<id>")`, which Telegram turns into a
+   redirect back into the moderator's DM with the bot (`answerCallbackQuery` only accepts
+   `t.me/<bot>?start=…` links, which is exactly the deep link `cmd_start_review` already handles;
+   re-entering re-acquires the same lock via `acquire_lock`'s same-owner branch). If the bot
+   username is unavailable, falls back to the `LOCK_NOOP_SELF` alert.
+   `cmd_start_review` guards against the resulting duplicate views: its cleanup+render section runs
+   under a per-chat `asyncio.Lock` (`review._render_locks`), because a render deletes the previously
+   tracked messages and only records the new ids *after* Telegram accepted the album — two concurrent
+   renders would both read an id-less state and leave a second copy behind. Inside the lock, a repeat
+   within `_RENDER_DEDUP_SECONDS` (10s) of the last finished render of the same `sub_id` is skipped
+   (`view_rendered_at` in FSM data) so a double tap does not make the view flicker; a later re-entry
+   still redraws, which is how a moderator recovers a view whose messages are gone.
+4. Otherwise responds with `callback.answer(LOCK_NOOP_HELD_BY.format(mod=...), show_alert=True)`
