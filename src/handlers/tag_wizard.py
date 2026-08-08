@@ -148,6 +148,35 @@ def _detect_existing_presets(
     return selected_by_section, custom
 
 
+def _format_suggested_hint(entries: list) -> list[str]:
+    """Подсказка по непроставленным тегам автора: '#raw' или '#raw (похоже на #Tag)'.
+
+    Принимает и старый формат FSM-данных (список строк), и новый (список dict).
+    """
+    parts: list[str] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            raw, guess = entry, None
+        elif isinstance(entry, dict):
+            raw = entry.get("raw")
+            guess = entry.get("tag")
+            if not isinstance(raw, str) or not raw:
+                continue
+            if not isinstance(guess, str) or not guess:
+                guess = None
+        else:
+            continue
+        if guess:
+            parts.append(
+                msg.TAGS_WIZARD_SUGGESTED_FUZZY.format(
+                    raw=html.escape(raw), guess=html.escape(guess)
+                )
+            )
+        else:
+            parts.append(f"#{html.escape(raw)}")
+    return parts
+
+
 def _build_wizard_view(
     data: dict,
     sections: list[TagPresetSection],
@@ -178,12 +207,11 @@ def _build_wizard_view(
         state = ModeratorReview.editing_tags_presets
     else:
         text = _build_preview_text(tags, caption, msg.TAGS_WIZARD_CUSTOM)
-        suggested_unknown = [
-            tag for tag in data.get("wizard_suggested_unknown", []) if isinstance(tag, str)
-        ]
-        if suggested_unknown:
-            hint_tags = ", ".join(f"#{html.escape(tag)}" for tag in suggested_unknown)
-            text += "\n\n" + msg.TAGS_WIZARD_SUGGESTED_HINT.format(tags=hint_tags)
+        hint_parts = _format_suggested_hint(data.get("wizard_suggested_unknown", []))
+        if hint_parts:
+            text += "\n\n" + msg.TAGS_WIZARD_SUGGESTED_HINT.format(
+                tags=", ".join(hint_parts)
+            )
         keyboard = tags_custom_kb(can_go_back=bool(sections))
         state = ModeratorReview.editing_tags_custom
 
@@ -269,16 +297,22 @@ async def handle_edit_tags_start(
     sections, grouped = await _load_presets(session)
     selected_by_section, custom = _detect_existing_presets(sub.tags or [], sections, grouped)
 
-    suggested_unknown: list[str] = []
+    suggested_unknown: list[dict[str, str | None]] = []
     if not sub.tags and sub.suggested_tags:
         suggested = deserialize_suggested(sub.suggested_tags)
+        # Предвыбираем только точные совпадения: fuzzy-догадка становится подсказкой,
+        # иначе модератор молча сохраняет тег, которого автор не писал.
         preselect, _ = _detect_existing_presets(
-            [item.tag for item in suggested if item.tag is not None],
+            [item.tag for item in suggested if item.tag is not None and item.exact],
             sections,
             grouped,
         )
         selected_by_section = preselect
-        suggested_unknown = [item.raw for item in suggested if item.tag is None]
+        suggested_unknown = [
+            {"raw": item.raw, "tag": item.tag}
+            for item in suggested
+            if item.tag is None or not item.exact
+        ]
 
     await state.update_data(
         sub_id=callback_data.sub_id,

@@ -600,11 +600,17 @@ async def _render_submission_card(
 
 
 def _format_suggested_line(suggested_tags: list[dict]) -> str:
-    """Format author-suggested tags: canonical '#Tag' for matched, '#raw(?)' otherwise."""
+    """Format author-suggested tags.
+
+    Exact match → canonical ``'#Tag'``; fuzzy guess → ``'#raw(≈#Tag)'`` so a moderator
+    can tell an author's own tag from the bot's guess; no match → ``'#raw(?)'``.
+    """
     parts = []
     for item in deserialize_suggested(suggested_tags):
-        if item.tag:
+        if item.tag and item.exact:
             parts.append(f"#{html.escape(item.tag)}")
+        elif item.tag:
+            parts.append(f"#{html.escape(item.raw)}(≈#{html.escape(item.tag)})")
         else:
             parts.append(f"#{html.escape(item.raw)}(?)")
     return " | ".join(parts)

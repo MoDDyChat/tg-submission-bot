@@ -5,6 +5,7 @@ from aiogram.types import MessageEntity
 from services.tag_parsing import (
     FUZZY_THRESHOLD,
     SuggestedTag,
+    alias_variants,
     deserialize_suggested,
     extract_hashtags,
     match_suggested_tags,
@@ -127,10 +128,45 @@ def test_match_suggested_tags_fuzzy_threshold_is_exported() -> None:
     assert FUZZY_THRESHOLD == 0.8
 
 
+def test_alias_variants_splits_composite_preset() -> None:
+    assert alias_variants("MineShield4 | #МайнШилд4") == [
+        "MineShield4 | #МайнШилд4",
+        "MineShield4",
+        "МайнШилд4",
+    ]
+
+
+def test_alias_variants_deduplicates_and_keeps_plain_tag() -> None:
+    assert alias_variants("art") == ["art"]
+    assert alias_variants("art | #art") == ["art | #art", "art"]
+
+
+def test_match_suggested_tags_exact_by_composite_preset_part() -> None:
+    """#MineShield4 не должен уходить в fuzzy к #MineShield3D — часть пресета точная."""
+    presets = [
+        ("MineShield3D", "3D"),
+        ("MineShield4 | #МайнШилд4", "МайнШилд4"),
+    ]
+
+    # Обе половинки составного пресета ведут к одному каноническому тегу,
+    # поэтому второй хэштег автора отбрасывается дедупом.
+    result = match_suggested_tags(["MineShield4", "МайнШилд4"], presets)
+
+    assert result == [
+        SuggestedTag(raw="MineShield4", tag="MineShield4 | #МайнШилд4", exact=True),
+    ]
+
+
 def test_strip_hashtag_lines_removes_leading_tag_block() -> None:
     assert strip_hashtag_lines("#One | #Two\n\nОписание") == "Описание"
     assert strip_hashtag_lines("#One,#Two\nОписание") == "Описание"
     assert strip_hashtag_lines("#One #Two\nОписание") == "Описание"
+
+
+def test_strip_hashtag_lines_supports_extra_separators() -> None:
+    assert strip_hashtag_lines("#One · #Two\n\nОписание") == "Описание"
+    assert strip_hashtag_lines("#One•#Two\nОписание") == "Описание"
+    assert strip_hashtag_lines("#One / #Two — #Three\n\nОписание") == "Описание"
 
 
 def test_strip_hashtag_lines_removes_trailing_tag_block() -> None:

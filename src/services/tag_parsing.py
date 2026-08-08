@@ -17,7 +17,12 @@ from aiogram.types import MessageEntity
 
 FUZZY_THRESHOLD = 0.8
 
-_BARE_HASHTAG_LINE_RE = re.compile(r"\s*#\S+(\s*[|,]?\s*#\S+)*\s*")
+# Разделители между хэштегами в строке автора и внутри составного пресета
+# («MineShield4 | #МайнШилд4» — два тега, которые всегда идут вместе).
+_TAG_SEPARATORS = "|,;·•/–—"
+
+_BARE_HASHTAG_LINE_RE = re.compile(rf"\s*#\S+(\s*[{re.escape(_TAG_SEPARATORS)}]?\s*#\S+)*\s*")
+_ALIAS_SPLIT_RE = re.compile(rf"[{re.escape(_TAG_SEPARATORS)}]+")
 
 
 @dataclass(frozen=True)
@@ -47,9 +52,32 @@ def extract_hashtags(text: str | None, entities: list[MessageEntity] | None) -> 
     return tags
 
 
+def alias_variants(text: str) -> list[str]:
+    """Составной пресет → сам текст и его части как алиасы.
+
+    ``'MineShield4 | #МайнШилд4'`` → ``['MineShield4 | #МайнШилд4', 'MineShield4', 'МайнШилд4']``.
+    Полный текст идёт первым, чтобы точное совпадение по нему выигрывало у частей.
+    """
+    variants: list[str] = []
+    seen: set[str] = set()
+    for candidate in [text, *_ALIAS_SPLIT_RE.split(text)]:
+        cleaned = candidate.strip().lstrip("#").strip()
+        if not cleaned:
+            continue
+        key = cleaned.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        variants.append(cleaned)
+    return variants
+
+
 def match_suggested_tags(raw_tags: list[str], presets: list[tuple[str, str]]) -> list[SuggestedTag]:
     folded_candidates = [
-        (tag, text.casefold()) for tag, label in presets for text in (tag, label)
+        (tag, alias.casefold())
+        for tag, label in presets
+        for text in (tag, label)
+        for alias in alias_variants(text)
     ]
     results: list[SuggestedTag] = []
     matched_tags: set[str] = set()

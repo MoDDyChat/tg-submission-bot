@@ -71,7 +71,7 @@ def test_card_mixes_canonical_and_unmatched_tags() -> None:
     sub = _fake_submission(
         tags=[],
         suggested_tags=[
-            {"raw": "art", "tag": "MineShieldArt", "exact": False},
+            {"raw": "MineShieldArt", "tag": "MineShieldArt", "exact": True},
             {"raw": "weird-tag", "tag": None, "exact": False},
         ],
     )
@@ -80,3 +80,26 @@ def test_card_mixes_canonical_and_unmatched_tags() -> None:
 
     assert "#MineShieldArt" in text
     assert "#weird-tag(?)" in text
+
+
+def test_card_marks_fuzzy_guess_with_author_raw_tag() -> None:
+    sub = _fake_submission(
+        tags=[],
+        suggested_tags=[{"raw": "MineShield4", "tag": "MineShield3D", "exact": False}],
+    )
+
+    text = _card_text(sub)
+
+    assert "#MineShield4(≈#MineShield3D)" in text
+
+
+def test_card_escapes_html_in_fuzzy_guess() -> None:
+    sub = _fake_submission(
+        tags=[],
+        suggested_tags=[{"raw": "<i>raw</i>", "tag": "<b>tag</b>", "exact": False}],
+    )
+
+    text = _card_text(sub)
+
+    assert "&lt;i&gt;raw&lt;/i&gt;(≈#&lt;b&gt;tag&lt;/b&gt;)" in text
+    assert "<b>tag</b>" not in text

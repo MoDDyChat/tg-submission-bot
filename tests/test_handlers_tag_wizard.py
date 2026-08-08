@@ -142,6 +142,26 @@ def test_build_wizard_view_custom_page_shows_suggested_hint() -> None:
     assert keyboard.inline_keyboard[-1][0].text == "Завершить редактирование"
 
 
+def test_build_wizard_view_hint_marks_fuzzy_guess() -> None:
+    sections, grouped = _wizard_data()
+    _, text, *_ = tag_wizard._build_wizard_view(
+        {
+            "wizard_caption": "Описание",
+            "wizard_sections": {"category": [], "character": []},
+            "wizard_custom": [],
+            "wizard_suggested_unknown": [
+                {"raw": "MineShield4", "tag": "MineShield3D"},
+                {"raw": "неизвестный", "tag": None},
+            ],
+            "wizard_page_index": len(sections),
+        },
+        sections,
+        grouped,
+    )
+
+    assert "#MineShield4 (похоже на #MineShield3D), #неизвестный" in text
+
+
 async def test_edit_tags_start_prefills_sections_and_unknown_from_suggested(monkeypatch) -> None:
     sections, grouped = _wizard_data()
     sub = make_submission(sub_id=5, status="pending", caption="Описание", media=[])
@@ -164,8 +184,32 @@ async def test_edit_tags_start_prefills_sections_and_unknown_from_suggested(monk
 
     assert state.data["wizard_sections"] == {"category": ["MineShieldArt"], "character": []}
     assert state.data["wizard_custom"] == []
-    assert state.data["wizard_suggested_unknown"] == ["неизвестный"]
+    assert state.data["wizard_suggested_unknown"] == [{"raw": "неизвестный", "tag": None}]
     assert state.data["wizard_page_index"] == 0
+
+
+async def test_edit_tags_start_does_not_prefill_fuzzy_match(monkeypatch) -> None:
+    """Fuzzy-догадка не должна оказаться отмеченной — только в подсказке."""
+    sections, grouped = _wizard_data()
+    sub = make_submission(sub_id=5, status="pending", caption="Описание", media=[])
+    sub.suggested_tags = [{"raw": "MineShield4", "tag": "MineShieldArt", "exact": False}]
+    callback = make_callback(message=make_message())
+    state = FakeState({})
+    db_user = make_user()
+
+    monkeypatch.setattr(tag_wizard, "_load_presets", AsyncMock(return_value=(sections, grouped)))
+    monkeypatch.setattr(tag_wizard, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(tag_wizard, "_render_wizard_message", AsyncMock())
+    monkeypatch.setattr(tag_wizard.edit_lock, "extend_lock", AsyncMock(return_value=True))
+
+    await tag_wizard.handle_edit_tags_start(
+        callback, SubmissionCB(action="edit_tags", sub_id=5), AsyncMock(), state, db_user
+    )
+
+    assert state.data["wizard_sections"] == {"category": [], "character": []}
+    assert state.data["wizard_suggested_unknown"] == [
+        {"raw": "MineShield4", "tag": "MineShieldArt"}
+    ]
 
 
 async def test_edit_tags_start_no_prefill_when_tags_present(monkeypatch) -> None:

@@ -5,7 +5,7 @@
 **Tags and the caption are independent entities.** Tags are stored in `submissions.tags` (a JSON array of strings without `#`), the caption is in `submissions.caption`.
 
 ### Source of tags
-Tags are **not extracted** from the viewer's caption. `submissions.tags` is empty when a post is created. Tags are added exclusively by a moderator through a 4-page wizard.
+`submissions.tags` is filled by a moderator through the wizard. The hashtags an author wrote in the caption never land in `submissions.tags` directly — they are parsed into `submissions.suggested_tags` and only *suggested* to the moderator (see "Author-suggested tags" below).
 
 ### Independence
 - Editing the caption **does not change** the tags
@@ -73,6 +73,35 @@ Edge-case rules:
 - if there are no sections at all, the wizard opens directly on the custom tags page
 
 All inline edits go through a single `_render_wizard_message()`, which re-reads the current sections/presets from the DB, safely handles `message is not modified`, and reuses `wizard_message_id`.
+
+---
+
+## Author-suggested tags (`submissions.suggested_tags`)
+
+At intake time `services/tag_parsing.py` reads the hashtags of the author's caption (via Telegram `hashtag` entities, so UTF-16 offsets are handled) and matches them against `tag_presets`. The result is stored as JSON in `submissions.suggested_tags`: `{raw, tag, exact}` per hashtag.
+
+Config (`TAG_PARSING_MODE`, default `suggest`):
+- `off` — no parsing at all, `suggested_tags` stays `NULL`
+- `suggest` — matches are only shown to the moderator; `submissions.tags` stays empty
+- `auto` — **exact** matches are written into `submissions.tags` right away (fuzzy ones never are), and only if `validate_caption_length` still passes
+
+`TAG_PARSING_STRIP_FROM_CAPTION=true` additionally trims bare hashtag lines from the top/bottom of the stored caption (`strip_hashtag_lines`). Separators recognised inside such a line: `| , ; · • / – —`.
+
+### Matching rules
+
+1. **Exact** — the author's hashtag equals a preset's `tag` or `label`, case-insensitively, **or one of its alias variants** (`alias_variants`). A composite preset such as `tag = "MineShield4 | #МайнШилд4"` (two tags that always go together) is split on the separators above, so `#MineShield4` and `#МайнШилд4` both match it exactly; the canonical value written to `tags` stays the whole composite string.
+2. **Fuzzy** — `difflib` ratio ≥ `FUZZY_THRESHOLD` (0.8) and unambiguous (no tie between two different presets) → `exact=False`.
+3. Otherwise `tag=None`.
+
+Only the first hashtag per canonical tag survives — later duplicates are dropped.
+
+### Fuzzy matches are never applied silently
+
+A fuzzy guess is a guess, so it stays visibly a guess:
+- topic card (`_format_suggested_line`): exact → `#Tag`, fuzzy → `#raw(≈#Tag)`, no match → `#raw(?)`
+- wizard prefill (`handle_edit_tags_start`): only `exact=True` matches are preselected; fuzzy and unmatched hashtags go to `wizard_suggested_unknown` and are rendered as a hint (`#raw (похоже на #Tag)`), so a moderator has to press the button themselves
+
+Prefill only happens while `submissions.tags` is still empty. `wizard_suggested_unknown` holds `{raw, tag}` dicts; plain strings from older FSM payloads are still accepted.
 
 ---
 
