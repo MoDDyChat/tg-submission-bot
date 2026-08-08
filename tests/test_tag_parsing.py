@@ -191,8 +191,24 @@ def test_strip_hashtag_lines_keeps_lines_with_markup() -> None:
     assert strip_hashtag_lines("#One <b>#Two</b>\nОписание") == "#One <b>#Two</b>\nОписание"
 
 
-def test_strip_hashtag_lines_keeps_middle_tag_block() -> None:
-    assert strip_hashtag_lines("Описание\n#One\nЕщё") == "Описание\n#One\nЕщё"
+def test_strip_hashtag_lines_keeps_tag_block_deep_in_the_text() -> None:
+    assert strip_hashtag_lines("Строка1\nСтрока2\nСтрока3\n#One\nЕщё") == (
+        "Строка1\nСтрока2\nСтрока3\n#One\nЕщё"
+    )
+
+
+def test_strip_hashtag_lines_removes_tag_block_under_a_short_heading() -> None:
+    """Теги «шапкой» под заголовком — та же подпись автора, что и блок сверху."""
+    assert strip_hashtag_lines("Описание\n#One\nЕщё") == "Описание\nЕщё"
+    assert strip_hashtag_lines("Заголовок\nПодзаголовок\n#One | #Two\nТекст") == (
+        "Заголовок\nПодзаголовок\nТекст"
+    )
+
+
+def test_strip_hashtag_lines_collapses_blank_line_left_by_head_block() -> None:
+    assert strip_hashtag_lines("Бобеъ\n#One | #Two\n\nОписание\n\nссылка") == (
+        "Бобеъ\n\nОписание\n\nссылка"
+    )
 
 
 def test_strip_hashtag_lines_collapses_leftover_empty_lines() -> None:

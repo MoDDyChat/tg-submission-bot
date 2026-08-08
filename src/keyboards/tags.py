@@ -28,9 +28,11 @@ def tags_preset_page_kb(
         row.append(
             InlineKeyboardButton(
                 text=f"{check}{preset.label}",
+                # Значение — id пресета: тег любой длины (а связка длинная всегда)
+                # не должен упираться в лимит callback_data в 64 байта.
                 callback_data=TagWizardCB(
                     action="toggle",
-                    value=f"{section.key}|{preset.tag}",
+                    value=str(preset.id),
                 ).pack(),
             )
         )

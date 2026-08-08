@@ -442,6 +442,80 @@ async def test_handle_custom_finish_unchanged_tags_skip_notification(monkeypatch
     callback.answer.assert_awaited_once_with(msg.TAGS_UPDATED)
 
 
+async def test_handle_toggle_preset_resolves_preset_by_id(monkeypatch) -> None:
+    """Кнопка несёт id пресета — тег берётся из БД, а не из callback_data."""
+    from keyboards.callbacks import TagWizardCB
+
+    sections, grouped = _wizard_data()
+    state = FakeState({"sub_id": 5, "wizard_sections": {"category": [], "character": []}})
+    callback = make_callback(message=make_message())
+    session = AsyncMock()
+
+    monkeypatch.setattr(tag_wizard, "_extend_lock_from_state", AsyncMock(return_value=True))
+    monkeypatch.setattr(tag_wizard, "_load_presets", AsyncMock(return_value=(sections, grouped)))
+    monkeypatch.setattr(tag_wizard, "_render_wizard_message", AsyncMock())
+
+    cb_data = TagWizardCB(action="toggle", value="1")
+    await tag_wizard.handle_toggle_preset(callback, cb_data, session, state, make_user())
+
+    assert state.data["wizard_sections"]["category"] == ["MineShieldArt"]
+
+    # Повторное нажатие снимает выбор.
+    await tag_wizard.handle_toggle_preset(callback, cb_data, session, state, make_user())
+
+    assert state.data["wizard_sections"]["category"] == []
+
+
+async def test_handle_toggle_preset_missing_preset_repaints_keyboard(monkeypatch) -> None:
+    """Пресет удалили, пока клавиатура висела — перерисовываем и предупреждаем."""
+    from keyboards.callbacks import TagWizardCB
+
+    sections, grouped = _wizard_data()
+    state = FakeState({"sub_id": 5})
+    callback = make_callback(message=make_message())
+    render = AsyncMock()
+
+    monkeypatch.setattr(tag_wizard, "_extend_lock_from_state", AsyncMock(return_value=True))
+    monkeypatch.setattr(tag_wizard, "_load_presets", AsyncMock(return_value=(sections, grouped)))
+    monkeypatch.setattr(tag_wizard, "_render_wizard_message", render)
+
+    cb_data = TagWizardCB(action="toggle", value="999")
+    await tag_wizard.handle_toggle_preset(callback, cb_data, AsyncMock(), state, make_user())
+
+    render.assert_awaited_once()
+    callback.answer.assert_awaited_once_with(msg.TAG_PRESET_NOT_FOUND, show_alert=True)
+
+
+async def test_handle_toggle_preset_rejects_non_numeric_value(monkeypatch) -> None:
+    from keyboards.callbacks import TagWizardCB
+
+    state = FakeState({"sub_id": 5})
+    callback = make_callback(message=make_message())
+
+    monkeypatch.setattr(tag_wizard, "_extend_lock_from_state", AsyncMock(return_value=True))
+
+    cb_data = TagWizardCB(action="toggle", value="category|MineShieldArt")
+    await tag_wizard.handle_toggle_preset(callback, cb_data, AsyncMock(), state, make_user())
+
+    callback.answer.assert_awaited_once_with(msg.SOMETHING_WENT_WRONG, show_alert=True)
+
+
+def test_assemble_wizard_tags_drops_tag_already_covered_by_group() -> None:
+    sections, _ = _wizard_data()
+    tags = tag_wizard._assemble_wizard_tags(
+        {
+            "wizard_sections": {
+                "category": ["MineShield4 | #МайнШилд4"],
+                "character": ["Nerkin"],
+            },
+            "wizard_custom": ["MineShield4", "Свой"],
+        },
+        sections,
+    )
+
+    assert tags == ["MineShield4 | #МайнШилд4", "Nerkin", "Свой"]
+
+
 # ---------------------------------------------------------------------------
 # Lock-guard tests for tag_wizard callbacks
 # ---------------------------------------------------------------------------

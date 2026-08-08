@@ -15,14 +15,17 @@ from dataclasses import dataclass
 from aiogram.enums import MessageEntityType
 from aiogram.types import MessageEntity
 
+from utils.tags import TAG_GROUP_SEPARATORS, split_tag_group
+
 FUZZY_THRESHOLD = 0.8
 
-# Разделители между хэштегами в строке автора и внутри составного пресета
-# («MineShield4 | #МайнШилд4» — два тега, которые всегда идут вместе).
-_TAG_SEPARATORS = "|,;·•/–—"
+_BARE_HASHTAG_LINE_RE = re.compile(
+    rf"\s*#\S+(\s*[{re.escape(TAG_GROUP_SEPARATORS)}]?\s*#\S+)*\s*"
+)
 
-_BARE_HASHTAG_LINE_RE = re.compile(rf"\s*#\S+(\s*[{re.escape(_TAG_SEPARATORS)}]?\s*#\S+)*\s*")
-_ALIAS_SPLIT_RE = re.compile(rf"[{re.escape(_TAG_SEPARATORS)}]+")
+# Сколько строк текста может стоять над строкой тегов, чтобы она всё ещё
+# считалась «шапкой» поста, а не хэштегами внутри рассказа.
+_HEAD_TEXT_LINES_BEFORE_TAGS = 2
 
 
 @dataclass(frozen=True)
@@ -60,8 +63,7 @@ def alias_variants(text: str) -> list[str]:
     """
     variants: list[str] = []
     seen: set[str] = set()
-    for candidate in [text, *_ALIAS_SPLIT_RE.split(text)]:
-        cleaned = candidate.strip().lstrip("#").strip()
+    for cleaned in [text.strip(), *split_tag_group(text)]:
         if not cleaned:
             continue
         key = cleaned.casefold()
@@ -110,13 +112,46 @@ def match_suggested_tags(raw_tags: list[str], presets: list[tuple[str, str]]) ->
     return results
 
 
+def _is_bare_tag_line(line: str) -> bool:
+    return "<" not in line and _BARE_HASHTAG_LINE_RE.fullmatch(line) is not None
+
+
+def _strip_head_tag_block(lines: list[str]) -> list[str]:
+    """Убрать строку тегов, стоящую «шапкой» — сразу под заголовком из пары строк.
+
+    Глубже в тексте блок не трогаем: там хэштеги обычно часть фразы,
+    а не подпись автора.
+    """
+    text_seen = 0
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if _is_bare_tag_line(line):
+            end = index
+            while end < len(lines) and _is_bare_tag_line(lines[end]):
+                end += 1
+            trimmed = lines[:index] + lines[end:]
+            # На стыке могли встретиться две пустые строки — оставляем одну.
+            while (
+                index > 0
+                and index < len(trimmed)
+                and not trimmed[index - 1].strip()
+                and not trimmed[index].strip()
+            ):
+                trimmed.pop(index)
+            return trimmed
+        text_seen += 1
+        if text_seen > _HEAD_TEXT_LINES_BEFORE_TAGS:
+            break
+    return lines
+
+
 def strip_hashtag_lines(html_caption: str | None) -> str | None:
     if not html_caption:
         return html_caption
     lines = html_caption.split("\n")
 
-    def is_bare_tag_line(line: str) -> bool:
-        return "<" not in line and _BARE_HASHTAG_LINE_RE.fullmatch(line) is not None
+    is_bare_tag_line = _is_bare_tag_line
 
     start = 0
     while start < len(lines) and is_bare_tag_line(lines[start]):
@@ -125,7 +160,7 @@ def strip_hashtag_lines(html_caption: str | None) -> str | None:
     while end > start and is_bare_tag_line(lines[end - 1]):
         end -= 1
 
-    remainder = lines[start:end]
+    remainder = _strip_head_tag_block(lines[start:end])
     while remainder and not remainder[0].strip():
         remainder.pop(0)
     while remainder and not remainder[-1].strip():

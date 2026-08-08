@@ -50,6 +50,7 @@ from services.author_card import request_author_card
 from states.moderator import ModeratorReview
 from db.session import session_factory
 from utils.formatting import user_mention
+from utils.tags import parse_tag_group, split_tag_group
 
 from ._helpers import _delete_tracked_messages
 from .recover import recover_missing_posts
@@ -133,11 +134,17 @@ def _normalize_section_label(raw_text: str) -> str:
 
 
 def _normalize_tag(raw_text: str) -> str:
-    return raw_text.strip().lstrip("#")
+    """Ввод тега пресета → канонический вид.
+
+    Один пресет может ставить несколько тегов сразу («связка»): всё, что введено
+    в это поле, — один пресет, поэтому «#MineShield4 #МайнШилд4» склеивается
+    в «MineShield4 | #МайнШилд4».
+    """
+    return parse_tag_group(raw_text)
 
 
 def _is_valid_tag(tag: str) -> bool:
-    return bool(tag) and "|" not in tag and not any(char.isspace() for char in tag)
+    return bool(split_tag_group(tag))
 
 
 def _section_back_callback_data(section_key: str) -> str:
@@ -159,7 +166,10 @@ def _parse_new_preset(raw_text: str) -> tuple[str | None, str | None, str | None
         tag = _normalize_tag(raw_tag)
     else:
         tag = _normalize_tag(value)
-        label = tag
+        # Без явной метки связка подписывается своим первым тегом,
+        # иначе на кнопке оказалась бы вся строка «A | #B».
+        parts = split_tag_group(tag)
+        label = parts[0] if parts else tag
 
     if not label:
         return None, None, msg.TAG_PRESET_EMPTY_LABEL

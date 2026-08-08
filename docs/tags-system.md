@@ -39,8 +39,18 @@ The runtime source of presets is the pair of tables `tag_preset_sections` and `t
 ### `tag_presets`
 - `preset_type` — reference to `tag_preset_sections.key`
 - `label` — button text in the wizard / management UI
-- `tag` — the value, without `#`, that ends up in `submissions.tags`
+- `tag` — the value, without `#`, that ends up in `submissions.tags`; may be a **tag group** (see below)
 - `sort_order` — display order within the section
+
+#### Tag groups
+
+One preset may put several tags at once — `tag = "MineShield4 | #МайнШилд4"` is a single button that adds both. The canonical form is "first tag bare, the rest prefixed with `#`", which is exactly how the group renders inside `format_tags_line` (it prefixes only the head of each element), so a group is indistinguishable from the same tags stored separately — `tests/test_tag_groups.py` pins that invariant.
+
+Helpers live in `utils/tags.py`: `split_tag_group` (group → parts), `canonical_tag_group` (parts → group), `parse_tag_group` (preset input → one tag or group, **space joins**), `parse_tags_input` (wizard custom page → several tags, **space separates**, a separator holds a group together) and `dedupe_tags` (a tag whose every part is already present is dropped, so a group plus a standalone preset carrying the same tag never doubles in the caption).
+
+Recognised separators — `| , ; · • / – —` (`TAG_GROUP_SEPARATORS`), shared with the parser of the author's caption.
+
+Preset buttons carry `preset.id` in their `callback_data`, not the tag value: a group is long, and Telegram caps `callback_data` at 64 **bytes** (Cyrillic costs two bytes per character). The only remaining length limit is the `tag` column itself, enforced by `_validate_tag_length` on both create and update.
 
 Initial values are seeded by a migration from the previous fixed schema, but after that migration the wizard and the management UI work exclusively through the DB.
 
@@ -51,7 +61,7 @@ The moderator's `Управление` ("Management") screen provides full CRUD 
 Management UI behavior:
 - the `Пресеты тегов` ("Tag Presets") screen shows all sections from `tag_preset_sections`
 - a new section is created by name; the internal `key` is generated automatically (`section_N`)
-- a new preset is created in a single step: you can send either `tag`, or `label | tag`
+- a new preset is created in a single step: you can send either `tag`, or `label | tag`, or a whole group — `МайнШилд4 | #MineShield4 #МайнШилд4` (everything after the first `|` is one button; without a label the group is named after its first tag)
 - deleting a section cascades deletion of its presets from the reference table, but does not rewrite already-saved `submissions.tags`
 
 Deleting or renaming a preset **does not rewrite** already-saved `submissions.tags`. If an old post contains a tag that's no longer in the reference table, the next time the wizard is opened, that tag lands in `wizard_custom`. The same rule applies to a section that was deleted entirely.
@@ -85,11 +95,17 @@ Config (`TAG_PARSING_MODE`, default `suggest`):
 - `suggest` — matches are only shown to the moderator; `submissions.tags` stays empty
 - `auto` — **exact** matches are written into `submissions.tags` right away (fuzzy ones never are), and only if `validate_caption_length` still passes
 
-`TAG_PARSING_STRIP_FROM_CAPTION=true` additionally trims bare hashtag lines from the top/bottom of the stored caption (`strip_hashtag_lines`). Separators recognised inside such a line: `| , ; · • / – —`.
+`TAG_PARSING_STRIP_FROM_CAPTION=true` additionally trims bare hashtag lines from the stored caption (`strip_hashtag_lines`). Separators recognised inside such a line: `| , ; · • / – —`.
+
+Which blocks are trimmed:
+- the leading and the trailing block, as before;
+- a block sitting right under a short heading — at most `_HEAD_TEXT_LINES_BEFORE_TAGS` (2) lines of text above it. Authors often write a title, then their tag line, then the text; that block is the same author's signature as a leading one.
+
+A hashtag line deeper in the text is left alone — there hashtags are usually part of a sentence rather than a signature. A caption made of hashtags only is never emptied.
 
 ### Matching rules
 
-1. **Exact** — the author's hashtag equals a preset's `tag` or `label`, case-insensitively, **or one of its alias variants** (`alias_variants`). A composite preset such as `tag = "MineShield4 | #МайнШилд4"` (two tags that always go together) is split on the separators above, so `#MineShield4` and `#МайнШилд4` both match it exactly; the canonical value written to `tags` stays the whole composite string.
+1. **Exact** — the author's hashtag equals a preset's `tag` or `label`, case-insensitively, **or one of its alias variants** (`alias_variants`, which adds each part of a tag group). So for `tag = "MineShield4 | #МайнШилд4"` both `#MineShield4` and `#МайнШилд4` match exactly; the canonical value written to `tags` stays the whole group.
 2. **Fuzzy** — `difflib` ratio ≥ `FUZZY_THRESHOLD` (0.8) and unambiguous (no tie between two different presets) → `exact=False`.
 3. Otherwise `tag=None`.
 

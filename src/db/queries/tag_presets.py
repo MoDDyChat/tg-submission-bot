@@ -172,6 +172,18 @@ async def find_tag_preset_conflicts(
     return list(result.scalars().all())
 
 
+MAX_PRESET_TAG_LENGTH = 255  # длина колонки tag_presets.tag
+
+
+def _validate_tag_length(tag: str) -> None:
+    """Раньше тег упирался в 32 символа из-за callback_data; теперь кнопка несёт id,
+    и единственный оставшийся предел — размер колонки."""
+    if len(tag) > MAX_PRESET_TAG_LENGTH:
+        raise ValueError(
+            f"tag must be at most {MAX_PRESET_TAG_LENGTH} characters, got {len(tag)}"
+        )
+
+
 async def create_tag_preset(
     session: AsyncSession,
     preset_type: str,
@@ -183,10 +195,9 @@ async def create_tag_preset(
     Uses a per-section ``pg_advisory_xact_lock`` to serialise concurrent
     MAX(sort_order)+INSERT within the same section.
 
-    Raises ``ValueError`` if *tag* exceeds 32 characters (callback data limit).
+    Raises ``ValueError`` if *tag* does not fit the column.
     """
-    if len(tag) > 32:
-        raise ValueError(f"tag must be at most 32 characters, got {len(tag)}")
+    _validate_tag_length(tag)
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtext(:section))").bindparams(
             section=preset_type
@@ -222,6 +233,7 @@ async def update_tag_preset(
     if label is not None:
         values["label"] = label
     if tag is not None:
+        _validate_tag_length(tag)
         values["tag"] = tag
 
     stmt = update(TagPresetEntry).where(TagPresetEntry.id == preset_id).values(**values)

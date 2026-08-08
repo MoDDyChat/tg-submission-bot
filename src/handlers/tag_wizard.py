@@ -30,7 +30,9 @@ from utils.tags import (
     MAX_MEDIA_CAPTION,
     MAX_TEXT_CAPTION,
     compose_caption,
+    dedupe_tags,
     format_tags_line,
+    parse_tags_input,
     strip_html_for_length,
     validate_caption_length,
 )
@@ -48,7 +50,8 @@ def _assemble_wizard_tags(data: dict, sections: list[TagPresetSection]) -> list[
     for section in sections:
         tags.extend(selected_by_section.get(section.key, []))
     tags.extend(data.get("wizard_custom", []))
-    return tags
+    # Связка и одиночный пресет могут нести один и тот же тег — в подписи он не двоится.
+    return dedupe_tags(tags)
 
 
 def _build_preview_text(tags: list[str], caption: str | None, prompt: str) -> str:
@@ -302,16 +305,17 @@ async def handle_edit_tags_start(
         suggested = deserialize_suggested(sub.suggested_tags)
         # Предвыбираем только точные совпадения: fuzzy-догадка становится подсказкой,
         # иначе модератор молча сохраняет тег, которого автор не писал.
-        preselect, _ = _detect_existing_presets(
+        preselect, orphaned = _detect_existing_presets(
             [item.tag for item in suggested if item.tag is not None and item.exact],
             sections,
             grouped,
         )
+        orphaned_set = set(orphaned)
         selected_by_section = preselect
         suggested_unknown = [
             {"raw": item.raw, "tag": item.tag}
             for item in suggested
-            if item.tag is None or not item.exact
+            if item.tag is None or not item.exact or item.tag in orphaned_set
         ]
 
     await state.update_data(
@@ -340,11 +344,30 @@ async def handle_toggle_preset(
         await callback.answer(msg.MODERATOR_LOCK_LOST, show_alert=True)
         return
     raw_value = callback_data.value or ""
-    if "|" not in raw_value:
+    try:
+        preset_id = int(raw_value)
+    except ValueError:
         await callback.answer(msg.SOMETHING_WENT_WRONG, show_alert=True)
         return
 
-    section_key, tag = raw_value.split("|", 1)
+    _, grouped = await _load_presets(session)
+    preset = next(
+        (item for entries in grouped.values() for item in entries if item.id == preset_id),
+        None,
+    )
+    if preset is None:
+        # Пресет удалили, пока клавиатура висела на экране — перерисуем актуальную.
+        await _render_wizard_message(
+            callback.bot,
+            callback.message.chat.id,
+            state,
+            session,
+            message_id=callback.message.message_id,
+        )
+        await callback.answer(msg.TAG_PRESET_NOT_FOUND, show_alert=True)
+        return
+
+    section_key, tag = preset.preset_type, preset.tag
     data = await state.get_data()
     selected_by_section = _normalize_selected_by_section(data.get("wizard_sections"))
     selected_tags = list(selected_by_section.get(section_key, []))
@@ -436,7 +459,8 @@ async def handle_custom_tags_text(
         await message.answer(msg.MODERATOR_LOCK_LOST)
         return
     logger.debug("tag_wizard: custom text=%s", message.text)
-    new_tags = [word.lstrip("#") for word in (message.text or "").strip().split() if word]
+    # Пробел разделяет теги, разделитель — держит связку: «A | #B» останется одним тегом.
+    new_tags = parse_tags_input(message.text or "")
 
     # Validate individual tag length
     for tag in new_tags:
