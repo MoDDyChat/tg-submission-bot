@@ -10,6 +10,7 @@ from core.config import config
 from core.logging import get_logger
 from db.models import User
 from db.queries import get_submission_with_user, update_submission_caption
+from filters.not_command import NotCommand
 from keyboards.callbacks import SubmissionCB
 from services import edit_lock, topic_notifications, topics
 from states.moderator import ModeratorReview
@@ -73,7 +74,7 @@ async def handle_edit_caption_start(
     await callback.answer()
 
 
-@router.message(ModeratorReview.editing_caption, F.text)
+@router.message(ModeratorReview.editing_caption, F.text, NotCommand())
 async def handle_edit_caption_text(
     message: Message,
     session: AsyncSession,

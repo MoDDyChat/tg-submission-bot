@@ -21,6 +21,7 @@ from db.queries import (
     unban_user,
 )
 from handlers.contact import deliver_direct_message
+from filters.not_command import NotCommand
 from keyboards.callbacks import AuthorCardCB
 from keyboards.moderator import author_card_cancel_kb, author_card_kb
 from services import admin_notifications, topic_notifications, topics
@@ -69,7 +70,7 @@ async def handle_note_start(
     await callback.answer()
 
 
-@router.message(AuthorCard.entering_note, F.text)
+@router.message(AuthorCard.entering_note, F.text, NotCommand())
 async def handle_note_text(
     message: Message,
     session: AsyncSession,
@@ -133,7 +134,7 @@ async def handle_ban_start(
     await callback.answer()
 
 
-@router.message(AuthorCard.entering_ban_reason, F.text)
+@router.message(AuthorCard.entering_ban_reason, F.text, NotCommand())
 async def handle_ban_reason(
     message: Message,
     session: AsyncSession,
@@ -241,7 +242,7 @@ async def handle_contact_start(
     await callback.answer()
 
 
-@router.message(AuthorCard.writing_direct_message, F.text)
+@router.message(AuthorCard.writing_direct_message, F.text, NotCommand())
 async def handle_contact_text(
     message: Message,
     session: AsyncSession,

@@ -10,6 +10,7 @@ from core.config import config
 from core.logging import get_logger
 from db.models import User
 from db.queries import get_submission_with_user, update_submission_status
+from filters.not_command import NotCommand
 from keyboards.callbacks import SubmissionCB
 from services import edit_lock, topic_notifications, topics
 from services.author_card import request_author_card
@@ -58,7 +59,7 @@ async def handle_reject(
     await callback.answer()
 
 
-@router.message(ModeratorReview.entering_reject_reason, F.text)
+@router.message(ModeratorReview.entering_reject_reason, F.text, NotCommand())
 async def handle_reject_reason(
     message: Message,
     session: AsyncSession,

@@ -19,6 +19,7 @@ from db.queries import (
     list_tag_presets_grouped,
     update_submission_tags,
 )
+from filters.not_command import NotCommand
 from keyboards.callbacks import SubmissionCB, TagWizardCB
 from keyboards.tags import tags_custom_kb, tags_preset_page_kb
 from services import edit_lock, topic_notifications, topics
@@ -443,7 +444,7 @@ async def handle_prev_page(
     await callback.answer()
 
 
-@router.message(ModeratorReview.editing_tags_custom, F.text)
+@router.message(ModeratorReview.editing_tags_custom, F.text, NotCommand())
 async def handle_custom_tags_text(
     message: Message,
     session: AsyncSession,

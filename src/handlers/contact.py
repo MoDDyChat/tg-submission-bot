@@ -14,6 +14,7 @@ from core.logging import get_logger, fmt_user
 from db.models import User
 from db.queries import create_message, get_submission_with_user
 from filters.is_moderator import IsModerator
+from filters.not_command import NotCommand
 from keyboards.callbacks import SubmissionCB
 from services import topic_notifications
 from states.contact import ContactViewer
@@ -85,7 +86,7 @@ async def handle_contact_start(
     await callback.answer()
 
 
-@router.message(ContactViewer.writing_message, F.text, IsModerator())
+@router.message(ContactViewer.writing_message, F.text, IsModerator(), NotCommand())
 async def handle_moderator_message(
     message: Message,
     session: AsyncSession,

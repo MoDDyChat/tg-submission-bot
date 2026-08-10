@@ -13,6 +13,7 @@ from core.exceptions import CannotBanModeratorError
 from core.logging import get_logger
 from db.models import User
 from db.queries import ban_user, get_submission_with_user
+from filters.not_command import NotCommand
 from keyboards.callbacks import SubmissionCB
 from services import admin_notifications, edit_lock, topic_notifications, topics
 from services.author_card import request_author_card
@@ -58,7 +59,7 @@ async def handle_ban_author_start(
     await callback.answer()
 
 
-@router.message(ModeratorReview.entering_ban_reason, F.text)
+@router.message(ModeratorReview.entering_ban_reason, F.text, NotCommand())
 async def handle_ban_reason(
     message: Message,
     session: AsyncSession,

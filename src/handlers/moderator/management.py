@@ -33,6 +33,7 @@ from db.queries import (
     update_tag_preset,
     update_tag_preset_section,
 )
+from filters.not_command import NotCommand
 from keyboards.callbacks import ManagementCB, TagPresetCB, UnbanCB
 from keyboards.moderator import (
     banned_users_kb,
@@ -923,7 +924,7 @@ async def handle_add_section_start(
     await callback.answer()
 
 
-@router.message(ModeratorReview.management_add_section_label, F.text)
+@router.message(ModeratorReview.management_add_section_label, F.text, NotCommand())
 async def handle_add_section_label_input(
     message: Message,
     session: AsyncSession,
@@ -1009,7 +1010,7 @@ async def handle_edit_section_start(
     await callback.answer()
 
 
-@router.message(ModeratorReview.management_edit_section_label, F.text)
+@router.message(ModeratorReview.management_edit_section_label, F.text, NotCommand())
 async def handle_edit_section_label_input(
     message: Message,
     session: AsyncSession,
@@ -1196,7 +1197,7 @@ async def handle_add_preset_start(
     await callback.answer()
 
 
-@router.message(ModeratorReview.management_add_preset_label, F.text)
+@router.message(ModeratorReview.management_add_preset_label, F.text, NotCommand())
 async def handle_add_preset_label_input(
     message: Message,
     session: AsyncSession,
@@ -1319,7 +1320,7 @@ async def handle_edit_label_start(
     await callback.answer()
 
 
-@router.message(ModeratorReview.management_edit_preset_label, F.text)
+@router.message(ModeratorReview.management_edit_preset_label, F.text, NotCommand())
 async def handle_edit_label_input(
     message: Message,
     session: AsyncSession,
@@ -1457,7 +1458,7 @@ async def handle_edit_tag_start(
     await callback.answer()
 
 
-@router.message(ModeratorReview.management_edit_preset_tag, F.text)
+@router.message(ModeratorReview.management_edit_preset_tag, F.text, NotCommand())
 async def handle_edit_tag_input(
     message: Message,
     session: AsyncSession,

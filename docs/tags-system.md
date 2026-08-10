@@ -81,6 +81,7 @@ Edge-case rules:
 - if a preset was deleted after an old post was saved, its value lands in `wizard_custom`
 - if a section or preset is deleted while the wizard is already open, the selected values are not lost: they are automatically moved into `wizard_custom`
 - if there are no sections at all, the wizard opens directly on the custom tags page
+- a bot command is never taken as tag text: the custom page carries `NotCommand()` (`filters/not_command.py`), like every other text handler bound to an FSM state. The bot's own deep-link buttons ("✏️ Редактировать", the "being edited" indicator) send the plain text `/start review_<id>` into the DM, and without the filter the open wizard page swallowed it — post #241 was published with `#Арт | #MoDDyChat | #/start | #review_242`. Refusing here lets the message fall through to `CommandStart`, so the deep link opens its post as intended
 
 All inline edits go through a single `_render_wizard_message()`, which re-reads the current sections/presets from the DB, safely handles `message is not modified`, and reuses `wizard_message_id`.
 

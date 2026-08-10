@@ -11,6 +11,7 @@ from core.config import config
 from core.logging import get_logger
 from db.models import User
 from db.queries import get_submission_with_user, get_submission_media, delete_media
+from filters.not_command import NotCommand
 from keyboards.callbacks import SubmissionCB, MediaCB
 from keyboards.moderator import media_manager_kb
 from services import edit_lock, topics, media_append
@@ -192,7 +193,7 @@ async def handle_adding_single_media(
         await message.answer(msg.MEDIA_UNSUPPORTED)
 
 
-@router.message(ModeratorReview.adding_media)
+@router.message(ModeratorReview.adding_media, NotCommand())
 async def handle_adding_media_unexpected(message: Message) -> None:
     await message.answer(msg.MEDIA_ADDING_EXPECT_MEDIA)
 

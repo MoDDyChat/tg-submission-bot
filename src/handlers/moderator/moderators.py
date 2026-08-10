@@ -31,6 +31,7 @@ from db.queries import (
     list_moderators,
 )
 from db.session import session_factory
+from filters.not_command import NotCommand
 from keyboards.callbacks import ManagementCB, ModeratorCB
 from keyboards.moderator import (
     moderator_add_kb,
@@ -399,7 +400,7 @@ async def handle_moderator_enter_id(
     await callback.answer()
 
 
-@router.message(ModeratorReview.management_enter_moderator_id, F.text)
+@router.message(ModeratorReview.management_enter_moderator_id, F.text, NotCommand())
 async def handle_moderator_enter_id_input(
     message: Message,
     session: AsyncSession,
