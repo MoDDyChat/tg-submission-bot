@@ -106,7 +106,7 @@ tg-submission-bot/
     │
     ├── services/
     │   ├── publisher.py          # Publishing to the channel + notifying the viewer + finalizing the card; idempotency; retry (3 attempts); calls render_queue after publishing
-    │   ├── scheduler.py          # APScheduler wrapper + restoring jobs from the DB; topic_title_sync_job processes one outbox task/10s, reconcile every 10 min only queues drift
+    │   ├── scheduler.py          # APScheduler wrapper + restoring jobs from the DB; topic_title_sync_job processes one outbox task/10s, reconcile every 10 min only queues drift; topic_cards_recover_job every 5 min reposts cards never sent by intake
     │   ├── topics.py             # Forum topics service: cards, transactional request_topic_title_sync, outbox consumer, DB-only reconcile, ensure_general_topic_nav
     │   ├── topics_queue.py       # Queue board: render_queue(bot, session) — event-driven; builds/updates general:queue:NN messages in the General topic; idempotency via MD5; asyncio.Lock against concurrent calls
     │   ├── edit_lock.py          # Optimistic edit locks: acquire/extend/release/force_release + cleanup
@@ -311,7 +311,8 @@ Port 5400 is only listened to inside the docker network; no need to publish it e
 create_async_engine(
     config.db.url, pool_size=10, max_overflow=5, pool_recycle=600, pool_pre_ping=True,
     connect_args={"command_timeout": 30.0, "server_settings": {
-        "statement_timeout": "30000", "idle_in_transaction_session_timeout": "60000"}},
+        "statement_timeout": "30000", "idle_in_transaction_session_timeout": "60000",
+        "lock_timeout": "5000"}},
 )
 ```
 
@@ -319,9 +320,10 @@ create_async_engine(
 - `pool_pre_ping=True` — checks the connection before handing it out from the pool
 - `command_timeout=30` — asyncpg stops waiting for a response. Without it, a dropped connection leaves the coroutine hanging forever: PostgreSQL sees the session as `idle in transaction`, and its row lock blocks every writer behind it
 - `statement_timeout` / `idle_in_transaction_session_timeout` — the same safety net from the server side: a hung transaction dies after a minute and releases its locks
+- `lock_timeout=5000` — waiting on someone *else's* row lock is not work, it's a stall: a writer blocked on a lock it doesn't own fails fast after 5s and gives the connection back to the pool instead of burning the full 30s `statement_timeout` sitting idle. Applies only to the main engine — the migration engine (below) isn't bound by it
 - Alembic migrations run on a **separate engine** without these timeouts (`NullPool`) — a legitimate table rewrite can take longer, and aborting it mid-way is worse than a slow startup. The same applies to waiting on the advisory lock: on the main engine, `statement_timeout` would kill `pg_advisory_lock` after 30s
 
-**Transaction boundary invariant:** external I/O (Telegram API, `asyncio.sleep` in a retry) is **never performed inside an open transaction** that has already written something. The pattern is claim → call → record, each DB phase separate (`process_next_topic_title_sync`, `reconcile_submission_cards`). This rule also applies to handlers: `cmd_start_review`, `handle_close`, `_cancel_viewing_post`, `handle_media_done` commit the lock/status write **before** updating the card in Telegram; `cleanup_edit_locks_job` first commits the deletion of expired locks and only then talks to Telegram for each one — in its own short session; `_render_queue_inner` / `_render_schedule_inner` close the read-only transaction before the first `editMessageText`. Breaking this rule once froze the title worker for two days: a network failure hung a coroutine, the transaction stayed open, and the `INSERT` for new users queued up behind its lock
+**Transaction boundary invariant:** external I/O (Telegram API, `asyncio.sleep` in a retry) is **never performed inside an open transaction** that has already written something. The pattern is claim → call → record, each DB phase separate (`process_next_topic_title_sync`, `reconcile_submission_cards`). This rule also applies to handlers: `cmd_start_review`, `handle_close`, `_cancel_viewing_post`, `handle_media_done` commit the lock/status write **before** updating the card in Telegram; `cleanup_edit_locks_job` first commits the deletion of expired locks and only then talks to Telegram for each one — in its own short session; `_render_queue_inner` / `_render_schedule_inner` close the read-only transaction before the first `editMessageText`. Intake follows the same rule end to end: `submit_single_media`, `submit_text` and `_finalize_media_group` (`services/submission_intake.py`) commit the new post (and its media rows) before replying to the author or making any Telegram call, and the follow-up `_publish_submission_to_topic` then runs `ensure_user_topic`, `post_submission_card` and `request_topic_title_sync` as three separate committed steps. Breaking this rule once froze the title worker for two days: a network failure hung a coroutine, the transaction stayed open, and the `INSERT` for new users queued up behind its lock; the same failure mode later lost post #377 and its card when intake held one transaction open across the topic-creation Telegram calls
 
 ---
 

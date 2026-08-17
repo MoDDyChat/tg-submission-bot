@@ -1,6 +1,6 @@
 """Submission-related DB queries."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,6 +53,30 @@ async def get_active_submissions(session: AsyncSession) -> list[Submission]:
         select(Submission)
         .options(selectinload(Submission.user), selectinload(Submission.media))
         .where(Submission.status.notin_(terminal))
+        .order_by(Submission.created_at.asc())
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def list_active_submissions_without_card(
+    session: AsyncSession, min_age: timedelta = timedelta(minutes=10)
+) -> list[Submission]:
+    """Активные посты старше min_age, у которых карточка в теме так и не появилась.
+
+    Без LIMIT: фиксированный head-лимит навсегда прятал бы хронически падающий
+    пост. ``min_age`` отсекает посты, ещё не прошедшие этап карточки, — job не
+    гонится с intake.
+    """
+    terminal = ("published", "rejected", "cancelled")
+    stmt = (
+        select(Submission)
+        .options(selectinload(Submission.user), selectinload(Submission.media))
+        .where(
+            Submission.status.notin_(terminal),
+            Submission.topic_card_message_id.is_(None),
+            Submission.created_at < func.now() - min_age,
+        )
         .order_by(Submission.created_at.asc())
     )
     result = await session.execute(stmt)

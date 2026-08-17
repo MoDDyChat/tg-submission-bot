@@ -44,6 +44,10 @@ def _reset_runtime_state() -> None:
         management_module._recover_lock = None
         management_module._recover_task = None
 
+    recover_module = sys.modules.get("handlers.moderator.recover")
+    if recover_module is not None:
+        recover_module._recover_guard = None
+
     scheduler_module = sys.modules.get("services.scheduler")
     if scheduler_module is not None:
         sched = getattr(scheduler_module, "scheduler", None)

@@ -228,6 +228,180 @@ async def test_post_submission_card_media_group() -> None:
     mock_save.assert_awaited_once_with(session, 12, [401, 402], 403)
 
 
+async def test_post_submission_card_deletes_media_when_card_send_fails() -> None:
+    """A failed card send must not leave orphan media the recovery job would duplicate."""
+    bot = make_bot()
+    bot.send_media_group.return_value = [make_sent_message(501), make_sent_message(502)]
+    bot.send_message.side_effect = RuntimeError("card down")
+    session = AsyncMock()
+    sub = make_submission(
+        sub_id=13,
+        media=[
+            make_media(media_id=1, file_id="f1", media_type="photo"),
+            make_media(media_id=2, file_id="f2", media_type="photo", sort_order=1),
+        ],
+    )
+
+    with (
+        patch.object(topics, "ensure_user_topic", AsyncMock(return_value=5)),
+        patch.object(topics, "get_publication_by_submission", AsyncMock(return_value=None)),
+        patch.object(topics, "_resolve_card_lock_owner", AsyncMock(return_value=None)),
+        patch.object(topics, "save_topic_card_ids", AsyncMock()) as mock_save,
+        patch.object(topics, "mark_card_rendered", AsyncMock()),
+        pytest.raises(RuntimeError),
+    ):
+        await topics.post_submission_card(bot, session, sub)
+
+    assert [call.args[1] for call in bot.delete_message.await_args_list] == [501, 502]
+    mock_save.assert_not_awaited()
+
+
+async def test_post_submission_card_render_failure_sends_no_media() -> None:
+    """Рендер идёт до первой отправки: его сбой не может осиротить медиа."""
+    bot = make_bot()
+    session = AsyncMock()
+    sub = make_submission(sub_id=14, media=[make_media(file_id="f1", media_type="photo")])
+
+    with (
+        patch.object(topics, "ensure_user_topic", AsyncMock(return_value=5)),
+        patch.object(
+            topics, "_render_submission_card", AsyncMock(side_effect=RuntimeError("render down"))
+        ),
+        patch.object(topics, "save_topic_card_ids", AsyncMock()) as mock_save,
+        patch.object(topics, "mark_card_rendered", AsyncMock()),
+        pytest.raises(RuntimeError),
+    ):
+        await topics.post_submission_card(bot, session, sub)
+
+    bot.send_photo.assert_not_awaited()
+    bot.send_media_group.assert_not_awaited()
+    bot.send_message.assert_not_awaited()
+    bot.delete_message.assert_not_awaited()
+    mock_save.assert_not_awaited()
+
+
+async def test_post_submission_card_deletes_block_when_id_write_fails() -> None:
+    """Доставка прошла, запись ID упала → удаляем и медиа, и карточку."""
+    bot = make_bot()
+    bot.send_media_group.return_value = [make_sent_message(601), make_sent_message(602)]
+    bot.send_message.return_value = make_sent_message(603)
+    session = AsyncMock()
+    sub = make_submission(
+        sub_id=15,
+        media=[
+            make_media(media_id=1, file_id="f1", media_type="photo"),
+            make_media(media_id=2, file_id="f2", media_type="photo", sort_order=1),
+        ],
+    )
+
+    with (
+        patch.object(topics, "ensure_user_topic", AsyncMock(return_value=5)),
+        patch.object(topics, "get_publication_by_submission", AsyncMock(return_value=None)),
+        patch.object(topics, "_resolve_card_lock_owner", AsyncMock(return_value=None)),
+        patch.object(
+            topics, "save_topic_card_ids", AsyncMock(side_effect=RuntimeError("lock timeout"))
+        ),
+        patch.object(topics, "mark_card_rendered", AsyncMock()),
+        pytest.raises(RuntimeError),
+    ):
+        await topics.post_submission_card(bot, session, sub)
+
+    assert [call.args[1] for call in bot.delete_message.await_args_list] == [601, 602, 603]
+
+
+async def test_post_submission_card_rolls_back_before_compensating() -> None:
+    """Откат раньше удалений: иначе висящий delete держал бы блокировку строки."""
+    bot = make_bot()
+    bot.send_message.return_value = make_sent_message(701)
+    session = AsyncMock()
+    sub = make_submission(sub_id=16, media=[])
+
+    trace: list[str] = []
+    session.rollback.side_effect = lambda *a, **kw: trace.append("rollback")
+    bot.delete_message.side_effect = lambda *a, **kw: trace.append("delete")
+
+    with (
+        patch.object(topics, "ensure_user_topic", AsyncMock(return_value=5)),
+        patch.object(topics, "get_publication_by_submission", AsyncMock(return_value=None)),
+        patch.object(topics, "_resolve_card_lock_owner", AsyncMock(return_value=None)),
+        patch.object(topics, "save_topic_card_ids", AsyncMock()),
+        patch.object(
+            topics, "mark_card_rendered", AsyncMock(side_effect=RuntimeError("lock timeout"))
+        ),
+        pytest.raises(RuntimeError),
+    ):
+        await topics.post_submission_card(bot, session, sub)
+
+    assert trace == ["rollback", "delete"]
+
+
+# ── commit_or_delete_delivered ─────────────────────────────────────
+
+async def test_commit_or_delete_delivered_keeps_block_on_success() -> None:
+    bot = make_bot()
+    session = AsyncMock()
+
+    await topics.commit_or_delete_delivered(session, bot, [21, 22, 23], 15)
+
+    session.commit.assert_awaited_once()
+    session.rollback.assert_not_awaited()
+    bot.delete_message.assert_not_awaited()
+
+
+async def test_commit_or_delete_delivered_rolls_back_then_deletes() -> None:
+    """Сбой коммита: сначала откат, только потом сетевые удаления."""
+    bot = make_bot()
+    session = AsyncMock()
+    trace: list[str] = []
+    session.commit.side_effect = RuntimeError("lock timeout")
+    session.rollback.side_effect = lambda *a, **kw: trace.append("rollback")
+    bot.delete_message.side_effect = lambda *a, **kw: trace.append("delete")
+
+    with (
+        patch.object(topics, "get_submission", AsyncMock(return_value=None)),
+        pytest.raises(RuntimeError),
+    ):
+        await topics.commit_or_delete_delivered(session, bot, [21, 22, 23], 15)
+
+    assert trace == ["rollback", "delete", "delete", "delete"]
+    assert [call.args[1] for call in bot.delete_message.await_args_list] == [21, 22, 23]
+
+
+async def test_commit_or_delete_delivered_keeps_block_when_commit_actually_landed() -> None:
+    """Ответ на COMMIT потерян, но сервер записал ID → блок живой, удалять нельзя."""
+    bot = make_bot()
+    session = AsyncMock()
+    session.commit.side_effect = RuntimeError("connection lost")
+    fresh = make_submission(sub_id=15)
+    fresh.topic_card_message_id = 23
+
+    with (
+        patch.object(topics, "get_submission", AsyncMock(return_value=fresh)),
+        pytest.raises(RuntimeError),
+    ):
+        await topics.commit_or_delete_delivered(session, bot, [21, 22, 23], 15)
+
+    session.rollback.assert_awaited_once()
+    bot.delete_message.assert_not_awaited()
+
+
+async def test_commit_or_delete_delivered_deletes_when_recheck_fails() -> None:
+    """Перечитать не удалось — считаем блок неотслеживаемым: дубль хуже репоста."""
+    bot = make_bot()
+    session = AsyncMock()
+    session.commit.side_effect = RuntimeError("lock timeout")
+
+    with (
+        patch.object(
+            topics, "get_submission", AsyncMock(side_effect=RuntimeError("connection closed"))
+        ),
+        pytest.raises(RuntimeError),
+    ):
+        await topics.commit_or_delete_delivered(session, bot, [21, 22, 23], 15)
+
+    assert [call.args[1] for call in bot.delete_message.await_args_list] == [21, 22, 23]
+
+
 # ── update_submission_card ─────────────────────────────────────────
 
 async def test_update_submission_card_no_card_id_is_noop() -> None:

@@ -239,8 +239,15 @@ async def handle_media_done(
     changed = _media_signature(sub.media) != data.get("media_sig_open", [])
     if changed:
         try:
-            await topics.repost_submission_card(callback.bot, session, sub)
-            await session.commit()
+            media_ids, card_id = await topics.repost_submission_card(
+                callback.bot, session, sub
+            )
+            # Тот же хелпер, что и на приёме/восстановлении: если коммит ID
+            # замены упадёт, живой блок в теме удаляется, иначе recover
+            # прислал бы дубль.
+            await topics.commit_or_delete_delivered(
+                session, callback.bot, [*media_ids, card_id], sub_id
+            )
             await topics.update_submission_card(callback.bot, session, sub)
             await topic_notifications.notify_media_changed(callback.bot, session, sub, db_user)
         except Exception:

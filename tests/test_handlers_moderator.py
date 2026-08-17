@@ -89,6 +89,27 @@ async def test_cmd_start_review_keeps_pending_status_and_syncs_title(monkeypatch
     send_view.assert_awaited_once()
 
 
+async def test_cmd_start_review_reports_stale_card_when_submission_is_gone(monkeypatch) -> None:
+    """An orphan topic card (row deleted/rolled back) must get a clear "stale card"
+    reply instead of the generic "not found", and must not touch the lock or FSM state.
+    """
+    state = FakeState({"actions_message_id": 3})
+    message = make_message(text="/start review_377")
+    session = AsyncMock()
+    db_user = make_user(user_id=2, telegram_id=202)
+
+    acquire_lock = AsyncMock(return_value=(True, None))
+    monkeypatch.setattr(review, "get_submission_with_user", AsyncMock(return_value=None))
+    monkeypatch.setattr(review.edit_lock, "acquire_lock", acquire_lock)
+
+    await review.cmd_start_review(message, session, state, db_user)
+
+    message.answer.assert_awaited_once_with(msg.SUBMISSION_CARD_STALE.format(sub_id=377))
+    acquire_lock.assert_not_awaited()
+    assert state.cleared is False
+    assert state.state is None
+
+
 async def test_cmd_start_review_does_not_re_render_a_just_rendered_post(monkeypatch) -> None:
     """A re-fired deep link (double tap on the lock indicator) must not duplicate the view."""
     state = FakeState({"sub_id": 55, "actions_message_id": 3, "view_rendered_at": time.time()})

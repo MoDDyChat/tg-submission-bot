@@ -54,7 +54,8 @@ async def test_finalize_media_group_sorts_messages_and_warns_about_extra_caption
     add_media = AsyncMock()
     monkeypatch.setattr(submission_intake, "add_media", add_media)
     monkeypatch.setattr(submission_intake, "get_submission_with_user", AsyncMock(return_value=sub_full))
-    monkeypatch.setattr(submission_intake.topics, "post_submission_card", AsyncMock())
+    monkeypatch.setattr(submission_intake.topics, "ensure_user_topic", AsyncMock(return_value=42))
+    monkeypatch.setattr(submission_intake.topics, "post_submission_card", AsyncMock(return_value=([], 1)))
     monkeypatch.setattr(submission_intake.topics, "request_topic_title_sync", AsyncMock())
     monkeypatch.setattr(submission_intake, "_render_queue", AsyncMock())
 
@@ -64,7 +65,8 @@ async def test_finalize_media_group_sorts_messages_and_warns_about_extra_caption
     assert [call.kwargs["sort_order"] for call in add_media.await_args_list] == [0, 1]
     assert first.answer.await_args_list[0].args[0] == msg.MEDIA_GROUP_EXTRA_CAPTIONS_WARNING.format(count=1)
     assert first.answer.await_args_list[1].args[0] == msg.SUBMISSION_ACCEPTED.format(sub_id=42)
-    assert session.commit.await_count == 2
+    # Границы транзакций: сам пост, тема, карточка, очередь заголовка.
+    assert session.commit.await_count == 4
 
 
 async def test_finalize_media_group_rejects_too_long_caption(monkeypatch) -> None:
@@ -131,7 +133,8 @@ async def test_handle_single_media_creates_submission_and_notifies_moderator(mon
     add_media = AsyncMock()
     monkeypatch.setattr(submission_intake, "add_media", add_media)
     monkeypatch.setattr(submission_intake, "get_submission_with_user", AsyncMock(return_value=sub))
-    monkeypatch.setattr(submission_intake.topics, "post_submission_card", AsyncMock())
+    monkeypatch.setattr(submission_intake.topics, "ensure_user_topic", AsyncMock(return_value=42))
+    monkeypatch.setattr(submission_intake.topics, "post_submission_card", AsyncMock(return_value=([], 1)))
     monkeypatch.setattr(submission_intake.topics, "request_topic_title_sync", AsyncMock())
     monkeypatch.setattr(submission_intake, "_render_queue", AsyncMock())
 

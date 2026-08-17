@@ -260,7 +260,9 @@ async def test_media_done_with_change(monkeypatch) -> None:
     monkeypatch.setattr(media.edit_lock, "extend_lock", AsyncMock(return_value=True))
     monkeypatch.setattr(media, "get_submission_with_user", AsyncMock(return_value=sub))
     monkeypatch.setattr(media.media_append, "wait_for_pending_append", AsyncMock())
-    monkeypatch.setattr(media.topics, "repost_submission_card", AsyncMock())
+    monkeypatch.setattr(
+        media.topics, "repost_submission_card", AsyncMock(return_value=([21, 22], 23))
+    )
     monkeypatch.setattr(media.topics, "update_submission_card", AsyncMock())
     monkeypatch.setattr(media.topics, "request_topic_title_sync", AsyncMock())
     monkeypatch.setattr(media.topic_notifications, "notify_media_changed", AsyncMock())
@@ -276,6 +278,34 @@ async def test_media_done_with_change(monkeypatch) -> None:
     )
     media.render_submission_view.assert_awaited_once_with(callback.message, session, 5, state)
     media.topic_notifications.notify_media_changed.assert_awaited_once_with(callback.bot, session, sub, db_user)
+
+
+async def test_media_done_deletes_replacement_when_commit_fails(monkeypatch) -> None:
+    """Коммит ID замены упал → живой блок снимаем, иначе recover пришлёт дубль."""
+    session = AsyncMock()
+    session.commit.side_effect = [None, RuntimeError("lock timeout")]
+    db_user = make_user()
+    callback = make_callback()
+    callback_data = AsyncMock(sub_id=5)
+    state = FakeState({"media_sig_open": [1], "sub_id": 5})
+    sub = make_submission(sub_id=5, status="pending", media=_two_media())
+
+    monkeypatch.setattr(media.edit_lock, "extend_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(media, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(media.media_append, "wait_for_pending_append", AsyncMock())
+    monkeypatch.setattr(
+        media.topics, "repost_submission_card", AsyncMock(return_value=([31, 32], 33))
+    )
+    monkeypatch.setattr(media.topics, "get_submission", AsyncMock(return_value=None))
+    monkeypatch.setattr(media.topics, "update_submission_card", AsyncMock())
+    monkeypatch.setattr(media.topics, "request_topic_title_sync", AsyncMock())
+    monkeypatch.setattr(media.topic_notifications, "notify_media_changed", AsyncMock())
+    monkeypatch.setattr(media, "render_submission_view", AsyncMock(return_value=True))
+
+    await media.handle_media_done(callback, callback_data, session, state, db_user)
+
+    assert [call.args[1] for call in callback.bot.delete_message.await_args_list] == [31, 32, 33]
+    media.topics.update_submission_card.assert_not_awaited()
 
 
 async def test_media_done_repost_failure_rollback(monkeypatch) -> None:

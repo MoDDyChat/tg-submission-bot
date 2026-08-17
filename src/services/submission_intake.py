@@ -89,6 +89,66 @@ async def _parse_suggested_tags(
     return suggested, html_caption, auto_tags
 
 
+async def _try_answer(message: Message, text: str, **kwargs) -> None:
+    """Ответить автору, не роняя приём поста: пост уже закоммичен."""
+    try:
+        await message.answer(text, **kwargs)
+    except Exception:
+        logger.warning("Не удалось ответить автору (%s)", text[:40], exc_info=True)
+
+
+async def _publish_submission_to_topic(
+    message: Message, session: AsyncSession, sub_id: int, user_id: int
+) -> None:
+    """Разместить карточку поста в теме и поставить в очередь заголовок темы.
+
+    Вызывается только после коммита самого поста: каждый Telegram-вызов здесь
+    идёт без открытой пишущей транзакции («Transaction boundary invariant»,
+    docs/architecture.md), поэтому сбой больше не может откатить пост.
+    Никогда не поднимает исключение.
+    """
+    sub_full = await get_submission_with_user(session, sub_id)
+    if sub_full is None:
+        logger.error("Пост #%d не найден сразу после создания", sub_id)
+        return
+
+    try:
+        await topics.ensure_user_topic(message.bot, session, sub_full.user)
+        await session.commit()
+        media_ids, card_id = await topics.post_submission_card(message.bot, session, sub_full)
+        # Общий хелпер: коммитит ID, а при сбое откатывает и снимает уже
+        # доставленный блок, иначе topic_cards_recover продублировал бы его.
+        await topics.commit_or_delete_delivered(
+            session, message.bot, [*media_ids, card_id], sub_id
+        )
+    except Exception:
+        await session.rollback()
+        logger.error("Не удалось отправить пост #%d в тему форума", sub_id, exc_info=True)
+        await _try_answer(message, msg.SUBMISSION_SEND_ERROR)
+        # Пост остаётся в БД без topic_card_message_id — карточку восстановит
+        # джоба topic_cards_recover или ручной Recover.
+        return
+
+    try:
+        await topics.request_topic_title_sync(session, user_id)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.warning(
+            "Не удалось поставить в очередь заголовок темы пользователя %d "
+            "(дрейф подхватит topic_titles_reconcile_job)",
+            user_id, exc_info=True,
+        )
+
+    try:
+        await _render_queue(message.bot, session)
+    except Exception:
+        logger.warning("Не удалось перерисовать очередь после поста #%d", sub_id, exc_info=True)
+        await session.rollback()
+    request_dashboard()
+    request_author_card(user_id)
+
+
 async def _finalize_media_group(
     group_id: str,
     sf,
@@ -169,22 +229,13 @@ async def _finalize_media_group(
                 sub.id, fmt_user(db_user), len(messages),
             )
 
-            await first_msg.answer(
+            await _try_answer(
+                first_msg,
                 msg.SUBMISSION_ACCEPTED.format(sub_id=sub.id),
                 reply_markup=submission_confirmed_kb(sub.id),
             )
 
-            sub_full = await get_submission_with_user(session, sub.id)
-            if sub_full:
-                try:
-                    await topics.post_submission_card(first_msg.bot, session, sub_full)
-                    await topics.request_topic_title_sync(session, sub_full.user.id)
-                    await _render_queue(first_msg.bot, session)
-                    request_dashboard()
-                    request_author_card(db_user.id)
-                    await session.commit()
-                except Exception:
-                    await first_msg.answer(msg.SUBMISSION_SEND_ERROR)
+            await _publish_submission_to_topic(first_msg, session, sub.id, db_user.id)
     except Exception:
         logger.exception("Ошибка при финализации медиа-группы %s", group_id)
 
@@ -240,28 +291,22 @@ async def submit_single_media(message: Message, session: AsyncSession, db_user: 
         file_unique_id=file_unique_id,
         media_type=media_type,
     )
+    # Пост фиксируем до первого Telegram-вызова: дальше ни один сетевой сбой
+    # не может откатить приём («Transaction boundary invariant»).
+    await session.commit()
 
     logger.info(
         "Новый пост #%d от %s, тип: %s",
         sub.id, fmt_user(db_user), media_type,
     )
 
-    await message.answer(
+    await _try_answer(
+        message,
         msg.SUBMISSION_ACCEPTED.format(sub_id=sub.id),
         reply_markup=submission_confirmed_kb(sub.id),
     )
 
-    sub_full = await get_submission_with_user(session, sub.id)
-    if sub_full:
-        try:
-            await topics.post_submission_card(message.bot, session, sub_full)
-            await topics.request_topic_title_sync(session, sub_full.user.id)
-            await _render_queue(message.bot, session)
-            request_dashboard()
-            request_author_card(db_user.id)
-        except Exception:
-            logger.error("Не удалось отправить пост #%d в тему форума", sub.id)
-            await message.answer(msg.SUBMISSION_SEND_ERROR)
+    await _publish_submission_to_topic(message, session, sub.id, db_user.id)
 
 
 async def submit_text(message: Message, session: AsyncSession, db_user: User) -> None:
@@ -290,22 +335,14 @@ async def submit_text(message: Message, session: AsyncSession, db_user: User) ->
         suggested_tags=suggested_tags,
         tags=auto_tags,
     )
+    await session.commit()
 
     logger.info("Новый текстовый пост #%d от %s", sub.id, fmt_user(db_user))
 
-    await message.answer(
+    await _try_answer(
+        message,
         msg.SUBMISSION_ACCEPTED.format(sub_id=sub.id),
         reply_markup=submission_confirmed_kb(sub.id),
     )
 
-    sub_full = await get_submission_with_user(session, sub.id)
-    if sub_full:
-        try:
-            await topics.post_submission_card(message.bot, session, sub_full)
-            await topics.request_topic_title_sync(session, sub_full.user.id)
-            await _render_queue(message.bot, session)
-            request_dashboard()
-            request_author_card(db_user.id)
-        except Exception:
-            logger.error("Не удалось отправить текстовый пост #%d в тему форума", sub.id)
-            await message.answer(msg.SUBMISSION_SEND_ERROR)
+    await _publish_submission_to_topic(message, session, sub.id, db_user.id)

@@ -30,6 +30,7 @@ from services.scheduler import (
     shutdown_scheduler,
     start_scheduler,
     topic_cards_reconcile_job,
+    topic_cards_recover_job,
     topic_title_sync_job,
     topic_titles_reconcile_job,
 )
@@ -198,6 +199,17 @@ def _register_scheduled_jobs(bot: Bot, throttle: ThrottleMiddleware) -> None:
         "interval",
         minutes=10,
         id="topic_cards_reconcile",
+        replace_existing=True,
+        misfire_grace_time=3600,
+        coalesce=True,
+        args=[bot, session_factory],
+        max_instances=1,
+    )
+    _sched_mod.scheduler.add_job(
+        topic_cards_recover_job,
+        "interval",
+        minutes=5,
+        id="topic_cards_recover",
         replace_existing=True,
         misfire_grace_time=3600,
         coalesce=True,

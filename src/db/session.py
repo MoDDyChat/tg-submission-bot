@@ -35,6 +35,12 @@ _COMMAND_TIMEOUT = 30.0
 _SERVER_SETTINGS = {
     "statement_timeout": "30000",
     "idle_in_transaction_session_timeout": "60000",
+    # Waiting on someone else's row lock is not work, it's a stall: a writer
+    # that blocks on a lock it doesn't own should fail fast in 5s and give the
+    # connection back to the pool, not burn the whole statement_timeout budget
+    # sitting idle. Migrations run on a separate NullPool engine without these
+    # settings, so this bound never applies to them.
+    "lock_timeout": "5000",
 }
 
 engine: AsyncEngine = create_async_engine(

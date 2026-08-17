@@ -48,6 +48,7 @@ from db.queries import (
     enqueue_topic_title_sync,
     ensure_topic_title_sync_pending,
     get_publication_by_submission,
+    get_submission,
     get_system_message,
     get_user_by_id,
     get_user_topic,
@@ -239,6 +240,10 @@ async def ensure_user_topic(bot: Bot, session: AsyncSession, user: User) -> int:
     result = await session.execute(insert_stmt)
     inserted_id = result.scalar_one_or_none()
     if inserted_id is None:
+        # Транзакцию закрываем до Telegram-вызовов: «Transaction boundary
+        # invariant» (docs/architecture.md) — иначе висящая запись держит
+        # блокировку строки, пока идёт сетевой вызов.
+        await session.commit()
         # Another coroutine won the race — clean up the orphaned Telegram topic
         try:
             await bot.delete_forum_topic(
@@ -257,7 +262,10 @@ async def ensure_user_topic(bot: Bot, session: AsyncSession, user: User) -> int:
         raise RuntimeError(
             f"ensure_user_topic: race lost but no topic found for user {user.id}"
         )
-    await session.flush()
+    # Коммитим строку user_topics до карточки автора: карточка и pin — это
+    # Telegram-вызовы, и держать под ними открытую пишущую транзакцию нельзя
+    # («Transaction boundary invariant», docs/architecture.md).
+    await session.commit()
 
     # Opening message of the topic: the author card (pinned), welcome text as fallback.
     try:
@@ -658,6 +666,90 @@ def _format_topic_card_text(
 
 # ── Submission card operations ─────────────────────────────────────
 
+async def delete_delivered_card_messages(
+    bot: Bot,
+    message_ids: list[int],
+    submission_id: int,
+) -> None:
+    """Best-effort delete an already delivered card block (media and/or card).
+
+    Used as compensation when Telegram delivery succeeded but the DB never
+    learned the IDs: the messages live in the topic with NULL in the DB, so the
+    recovery job would repost and duplicate them. Never raises — a failed
+    delete is logged and the caller keeps handling the original error.
+    """
+    for message_id in message_ids:
+        try:
+            await bot.delete_message(config.moderator_group_id, message_id)
+        except Exception:
+            logger.warning(
+                "Не удалось удалить доставленное сообщение %d поста #%d",
+                message_id, submission_id,
+            )
+
+
+async def _rollback_quietly(session: AsyncSession, submission_id: int) -> None:
+    """Roll back a failed write, never raising over the original error.
+
+    Called *before* any compensating Telegram request: while the transaction is
+    open the submission row stays locked, and a delete that hangs on the network
+    would hold that lock — exactly the failure mode the card path avoids.
+    """
+    try:
+        await session.rollback()
+    except Exception:
+        logger.warning("Не удалось откатить транзакцию поста #%d", submission_id, exc_info=True)
+
+
+async def _card_ids_committed(
+    session: AsyncSession,
+    submission_id: int,
+    message_ids: list[int],
+) -> bool:
+    """Did the failed commit actually land? Re-read the row after the rollback.
+
+    A commit exception is ambiguous: the server may have committed while the
+    client lost the response. The rollback ended the old transaction, so this
+    read sees the committed state. If the read itself fails we report "not
+    committed" — an untracked live block nobody cleans up is worse than a card
+    the recovery pass can repost.
+    """
+    try:
+        fresh = await get_submission(session, submission_id)
+        return fresh is not None and fresh.topic_card_message_id in message_ids
+    except Exception:
+        logger.warning(
+            "Не удалось перечитать пост #%d после сбоя коммита", submission_id, exc_info=True
+        )
+        return False
+
+
+async def commit_or_delete_delivered(
+    session: AsyncSession,
+    bot: Bot,
+    message_ids: list[int],
+    submission_id: int,
+) -> None:
+    """Commit just-recorded card IDs, undoing the delivery if the commit fails.
+
+    Single entry point for every delivery path (intake, recovery, moderator
+    repost): Telegram already holds the block, so a rollback that loses its IDs
+    would leave a live message the DB knows nothing about and the recovery job
+    would post a duplicate. Re-raises the commit error.
+    """
+    try:
+        await session.commit()
+    except Exception:
+        await _rollback_quietly(session, submission_id)
+        if await _card_ids_committed(session, submission_id, message_ids):
+            logger.warning(
+                "Коммит карточки поста #%d всё же прошёл, блок оставляем", submission_id
+            )
+            raise
+        await delete_delivered_card_messages(bot, message_ids, submission_id)
+        raise
+
+
 async def post_submission_card(
     bot: Bot,
     session: AsyncSession,
@@ -671,6 +763,11 @@ async def post_submission_card(
     topic_id = await ensure_user_topic(bot, session, submission.user)
     group_id = config.moderator_group_id
     media_ids: list[int] = []
+
+    # Render before the first media send: rendering reads the DB and calls
+    # bot.me(), and a failure there after media had already landed would leave
+    # untracked messages in the topic outside any compensation path.
+    text, kb = await _render_submission_card(bot, session, submission)
 
     media_list = submission.media or []
     if media_list:
@@ -704,7 +801,6 @@ async def post_submission_card(
             )
             raise
 
-    text, kb = await _render_submission_card(bot, session, submission)
     try:
         card_msg = await bot.send_message(
             chat_id=group_id,
@@ -720,30 +816,50 @@ async def post_submission_card(
                 topic_id, submission.id,
             )
             if await _try_reopen_topic(bot, topic_id):
-                card_msg = await bot.send_message(
-                    chat_id=group_id,
-                    message_thread_id=topic_id,
-                    text=text,
-                    reply_markup=kb,
-                    disable_notification=True,
-                )
+                try:
+                    card_msg = await bot.send_message(
+                        chat_id=group_id,
+                        message_thread_id=topic_id,
+                        text=text,
+                        reply_markup=kb,
+                        disable_notification=True,
+                    )
+                except Exception:
+                    await delete_delivered_card_messages(bot, media_ids, submission.id)
+                    raise
             else:
+                await delete_delivered_card_messages(bot, media_ids, submission.id)
                 raise
         else:
             logger.exception(
                 "Не удалось отправить карточку поста #%d в тему %d",
                 submission.id, topic_id,
             )
+            await delete_delivered_card_messages(bot, media_ids, submission.id)
             raise
     except Exception:
         logger.exception(
             "Не удалось отправить карточку поста #%d в тему %d",
             submission.id, topic_id,
         )
+        await delete_delivered_card_messages(bot, media_ids, submission.id)
         raise
 
-    await save_topic_card_ids(session, submission.id, media_ids, card_msg.message_id)
-    await mark_card_rendered(session, submission.id, _card_render_hash(text, kb))
+    try:
+        await save_topic_card_ids(session, submission.id, media_ids, card_msg.message_id)
+        await mark_card_rendered(session, submission.id, _card_render_hash(text, kb))
+    except Exception:
+        # The block is live in Telegram but the DB will not remember it (the
+        # caller's transaction rolls back), so drop it — otherwise recovery
+        # reposts a duplicate. Roll back first: the failed write may already hold
+        # the submission row lock, and the deletes below are network calls.
+        # The caller compensates the same way if its own commit fails after we
+        # return.
+        await _rollback_quietly(session, submission.id)
+        await delete_delivered_card_messages(
+            bot, [*media_ids, card_msg.message_id], submission.id
+        )
+        raise
     logger.info(
         "Карточка поста #%d размещена в теме %d (медиа: %d шт.)",
         submission.id, topic_id, len(media_ids),

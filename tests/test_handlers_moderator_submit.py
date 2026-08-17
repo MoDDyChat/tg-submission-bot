@@ -47,7 +47,8 @@ async def test_moderator_submit_single_media_creates_submission(monkeypatch) -> 
     add_media_mock = AsyncMock()
     monkeypatch.setattr(submission_intake, "add_media", add_media_mock)
     monkeypatch.setattr(submission_intake, "get_submission_with_user", AsyncMock(return_value=sub))
-    monkeypatch.setattr(submission_intake.topics, "post_submission_card", AsyncMock())
+    monkeypatch.setattr(submission_intake.topics, "ensure_user_topic", AsyncMock(return_value=42))
+    monkeypatch.setattr(submission_intake.topics, "post_submission_card", AsyncMock(return_value=([], 1)))
     monkeypatch.setattr(submission_intake.topics, "request_topic_title_sync", AsyncMock())
     monkeypatch.setattr(submission_intake, "_render_queue", AsyncMock())
 
@@ -72,7 +73,8 @@ async def test_moderator_submit_text_creates_submission(monkeypatch) -> None:
     monkeypatch.setattr(submission_intake, "get_html_text", lambda m: "Привет, это мой арт")
     monkeypatch.setattr(submission_intake, "create_submission", AsyncMock(return_value=sub))
     monkeypatch.setattr(submission_intake, "get_submission_with_user", AsyncMock(return_value=sub))
-    monkeypatch.setattr(submission_intake.topics, "post_submission_card", AsyncMock())
+    monkeypatch.setattr(submission_intake.topics, "ensure_user_topic", AsyncMock(return_value=42))
+    monkeypatch.setattr(submission_intake.topics, "post_submission_card", AsyncMock(return_value=([], 1)))
     monkeypatch.setattr(submission_intake.topics, "request_topic_title_sync", AsyncMock())
     monkeypatch.setattr(submission_intake, "_render_queue", AsyncMock())
 

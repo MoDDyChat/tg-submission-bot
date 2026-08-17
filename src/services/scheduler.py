@@ -278,6 +278,19 @@ async def topic_cards_reconcile_job(
         logger.warning("Не удалось выполнить reconcile карточек", exc_info=True)
 
 
+async def topic_cards_recover_job(
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Переотправить карточки постов, потерянные сбоем на этапе размещения."""
+    from handlers.moderator.recover import recover_cardless_posts
+
+    try:
+        await recover_cardless_posts(bot, session_factory)
+    except Exception:
+        logger.warning("Не удалось восстановить карточки постов", exc_info=True)
+
+
 async def topic_title_sync_job(
     bot: Bot,
     session_factory: async_sessionmaker[AsyncSession],

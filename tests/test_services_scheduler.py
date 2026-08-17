@@ -222,6 +222,23 @@ async def test_topic_cards_reconcile_job_hands_over_factory(monkeypatch) -> None
     session.commit.assert_not_awaited()
 
 
+async def test_topic_cards_recover_job_delegates_and_swallows(monkeypatch) -> None:
+    """The job is a thin wrapper: it delegates and never lets an error escape."""
+    import handlers.moderator.recover as recover_mod
+
+    recover_cardless = AsyncMock(return_value=0)
+    monkeypatch.setattr(recover_mod, "recover_cardless_posts", recover_cardless)
+    factory = FakeSessionFactory(AsyncMock())
+    bot = make_bot()
+
+    await scheduler.topic_cards_recover_job(bot, factory)
+
+    recover_cardless.assert_awaited_once_with(bot, factory)
+
+    recover_cardless.side_effect = RuntimeError("boom")
+    await scheduler.topic_cards_recover_job(bot, factory)
+
+
 def test_register_scheduled_jobs_includes_author_card_and_dashboard_jobs(mock_scheduler) -> None:
     import core.bot as bot_mod
 
@@ -235,6 +252,7 @@ def test_register_scheduled_jobs_includes_author_card_and_dashboard_jobs(mock_sc
         "author_card_render": {"seconds": 60},
         "author_card_reconcile": {"minutes": 10},
         "dashboard_render": {"seconds": 60},
+        "topic_cards_recover": {"minutes": 5},
     }
     for job_id, interval_kwargs in expected.items():
         assert job_id in calls_by_id, f"job {job_id} was not registered"

@@ -62,7 +62,11 @@ async def cmd_start_review(
     logger.debug("Модератор открыл пост #%d для ревью", sub_id)
     sub = await get_submission_with_user(session, sub_id)
     if sub is None:
-        await message.answer(msg.SUBMISSION_NOT_FOUND)
+        # Orphan card: the row was deleted/rolled back but the topic card (and its
+        # "✏️ Редактировать" url-button) survived. That button can't be removed from
+        # here — the tap just re-fires this deep link with no way to reach the card.
+        logger.warning("Deep link на несуществующий пост #%d: карточка-сирота в теме", sub_id)
+        await message.answer(msg.SUBMISSION_CARD_STALE.format(sub_id=sub_id))
         return
     if sub.status in TERMINAL_STATUSES:
         await message.answer(msg.SUBMISSION_NOT_AVAILABLE)

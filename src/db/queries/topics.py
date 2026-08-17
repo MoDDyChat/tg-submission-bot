@@ -174,6 +174,33 @@ async def clear_topic_card_ids(session: AsyncSession, sub_id: int) -> None:
     await session.flush()
 
 
+async def clear_topic_card_ids_if_unchanged(
+    session: AsyncSession, sub_id: int, expected_card_id: int
+) -> bool:
+    """Like ``clear_topic_card_ids``, but only when the card is still the probed one.
+
+    Recover probes a card ID read before a Telegram round-trip; meanwhile a
+    moderator's media replacement may have deleted that card and committed a new
+    one. Clearing by submission ID alone would erase the replacement's IDs and
+    orphan a live card. Returns ``True`` if this caller won the race.
+    """
+    stmt = (
+        update(Submission)
+        .where(
+            Submission.id == sub_id,
+            Submission.topic_card_message_id == expected_card_id,
+        )
+        .values(
+            topic_media_message_ids=None,
+            topic_card_message_id=None,
+            card_rendered_hash=None,
+        )
+    )
+    result = await session.execute(stmt)
+    await session.flush()
+    return result.rowcount > 0
+
+
 async def mark_card_rendered(
     session: AsyncSession, sub_id: int, rendered_hash: str
 ) -> None:

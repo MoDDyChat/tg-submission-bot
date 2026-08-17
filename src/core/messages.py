@@ -76,6 +76,7 @@ _DEFAULTS: dict[str, str | dict[str, str]] = {
     'TEXT_EMPTY_WARNING': 'Сообщение не может быть пустым. Отправь текст или медиафайл.',
     'TEXT_TOO_LONG': 'Текст слишком длинный ({length} символов). Максимум — {max_length}.',
     'SUBMISSION_NOT_FOUND': 'Пост не найден.',
+    'SUBMISSION_CARD_STALE': '⚠️ Пост #{sub_id} отсутствует в базе — карточка в теме устарела или ссылка недействительна. Эту карточку можно игнорировать.',
     'NOT_YOUR_SUBMISSION': 'Это не твой пост.',
     'SUBMISSION_CANT_CANCEL': 'Пост уже нельзя отменить (статус: {status}).',
     'SUBMISSION_CANCELLED': '<b>Пост (#{sub_id})</b> отменён.',

@@ -28,6 +28,7 @@ from db.queries.submissions import (
     get_submission,
     get_submission_by_topic_card_id,
     get_submission_with_user,
+    list_active_submissions_without_card,
     update_submission_caption,
     update_submission_status,
     update_submission_tags,
@@ -55,6 +56,7 @@ from db.queries.tag_presets import (
 )
 from db.queries.topics import (
     clear_topic_card_ids,
+    clear_topic_card_ids_if_unchanged,
     delete_user_topic,
     enqueue_topic_title_sync,
     ensure_topic_title_sync_pending,
@@ -113,6 +115,7 @@ __all__ = [
     "get_submission",
     "get_submission_by_topic_card_id",
     "get_submission_with_user",
+    "list_active_submissions_without_card",
     "update_submission_caption",
     "update_submission_status",
     "update_submission_tags",
@@ -137,6 +140,7 @@ __all__ = [
     "update_tag_preset_section",
     # topics
     "clear_topic_card_ids",
+    "clear_topic_card_ids_if_unchanged",
     "delete_user_topic",
     "enqueue_topic_title_sync",
     "ensure_topic_title_sync_pending",

@@ -9,6 +9,7 @@ from db.models import Submission, TagPresetSection, User
 from db.queries import (
     add_media,
     ban_user,
+    clear_topic_card_ids_if_unchanged,
     create_message,
     create_publication,
     create_submission,
@@ -32,6 +33,7 @@ from db.queries import (
     get_tag_preset_section_by_label,
     get_unpublished_publications,
     get_users_by_username,
+    list_active_submissions_without_card,
     list_tag_preset_sections,
     list_tag_presets,
     list_tag_presets_grouped,
@@ -235,6 +237,54 @@ async def test_create_submission_persists_suggested_tags(db_session) -> None:
 
     assert reloaded.suggested_tags == suggested
     assert reloaded.tags == []
+
+
+@pytest.mark.asyncio
+async def test_list_active_submissions_without_card_skips_young_intakes(db_session) -> None:
+    user, _ = await get_or_create_user(db_session, 784, "author", "Author")
+    fresh = await create_submission(db_session, user.id, "Только что принят")
+    stale = await create_submission(db_session, user.id, "Завис без карточки")
+    carded = await create_submission(db_session, user.id, "С карточкой")
+    await db_session.flush()
+    stale.created_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    carded.created_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    carded.topic_card_message_id = 777
+    await db_session.commit()
+
+    cardless = await list_active_submissions_without_card(db_session)
+
+    # The fresh one may still be mid-intake, so min_age keeps the job off it.
+    assert [item.id for item in cardless] == [stale.id]
+    assert fresh.id not in {item.id for item in cardless}
+
+
+@pytest.mark.asyncio
+async def test_clear_topic_card_ids_if_unchanged_is_compare_and_swap(db_session) -> None:
+    user, _ = await get_or_create_user(db_session, 785, "author", "Author")
+    submission = await create_submission(db_session, user.id, "С карточкой")
+    await db_session.flush()
+    submission.topic_card_message_id = 500
+    submission.topic_media_message_ids = [498, 499]
+    submission.card_rendered_hash = "hash"
+    await db_session.commit()
+
+    # Another writer replaced the card: the probed ID no longer matches.
+    lost = await clear_topic_card_ids_if_unchanged(db_session, submission.id, 400)
+    await db_session.commit()
+    await db_session.refresh(submission)
+
+    assert lost is False
+    assert submission.topic_card_message_id == 500
+    assert submission.topic_media_message_ids == [498, 499]
+
+    won = await clear_topic_card_ids_if_unchanged(db_session, submission.id, 500)
+    await db_session.commit()
+    await db_session.refresh(submission)
+
+    assert won is True
+    assert submission.topic_card_message_id is None
+    assert submission.topic_media_message_ids is None
+    assert submission.card_rendered_hash is None
 
 
 @pytest.mark.asyncio
