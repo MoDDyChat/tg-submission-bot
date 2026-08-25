@@ -117,6 +117,7 @@ USER_BANNED: |-
   <b>Причина:</b> {reason}
 USER_UNBANNED: Пользователь {user} разблокирован.
 USER_ALREADY_BANNED: Пользователь уже заблокирован.
+USER_ALREADY_UNBANNED: Пользователь уже разблокирован.
 CANNOT_BAN_MODERATOR: Нельзя заблокировать модератора.
 MODERATOR_HOME: |-
   <b>Панель модератора</b>

@@ -149,12 +149,23 @@ async def handle_ban_reason(
 
     reason_html = get_html_text(message)
     try:
-        await ban_user(session, user_id, reason_html)
+        banned = await ban_user(session, user_id, reason_html)
     except CannotBanModeratorError:
         # Race with a concurrent role grant — same handling as handlers/moderator/ban.py.
+        # Rollback first: ban_user holds FOR UPDATE on the user row, and the
+        # answer's network round-trip must not keep that lock open.
+        await session.rollback()
         await message.answer(msg.AUTHOR_CARD_CANNOT_BAN_MODERATOR)
         await state.clear()
         return
+
+    if not banned:
+        # Lost the race against a concurrent ban — nothing to notify about.
+        await session.rollback()
+        await message.answer(msg.USER_ALREADY_BANNED)
+        await state.clear()
+        return
+    await session.commit()
 
     target = await get_user_by_id(session, user_id)
     display = user_mention(target) if target else f"id:{user_id}"
@@ -202,7 +213,15 @@ async def handle_unban(
     if target is None:
         return
 
-    await unban_user(session, target.id)
+    unbanned = await unban_user(session, target.id)
+    if not unbanned:
+        # Not banned anymore (concurrent unban) — nothing to notify about.
+        await session.rollback()
+        await callback.answer(msg.USER_ALREADY_UNBANNED, show_alert=True)
+        return
+    # Commit before the first Telegram call — DB changes must not dangle
+    # behind network round-trips.
+    await session.commit()
     logger.info("Пользователь id:%d разблокирован с карточки автора %s", target.id, fmt_user(db_user))
 
     await admin_notifications.notify_admins(

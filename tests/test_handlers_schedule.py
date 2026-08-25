@@ -37,9 +37,10 @@ async def test_schedule_confirm_calls_render_schedule(monkeypatch) -> None:
     monkeypatch.setattr(schedule, "get_submission_with_user", AsyncMock(return_value=sub))
     monkeypatch.setattr(schedule.edit_lock, "extend_lock", AsyncMock(return_value=True))
     monkeypatch.setattr(schedule, "get_publication_by_submission", AsyncMock(return_value=None))
+    mock_transition = AsyncMock(return_value=True)
+    monkeypatch.setattr(schedule, "transition_submission_status", mock_transition)
     monkeypatch.setattr(schedule, "create_publication", AsyncMock(return_value=pub))
     monkeypatch.setattr(schedule, "update_submission_status", AsyncMock())
-    monkeypatch.setattr(schedule, "update_publication_time", AsyncMock())
     monkeypatch.setattr(schedule, "cancel_scheduled", AsyncMock())
     monkeypatch.setattr(schedule, "schedule_post", AsyncMock())
     monkeypatch.setattr(schedule.topic_notifications, "notify_scheduled", AsyncMock())
@@ -52,6 +53,7 @@ async def test_schedule_confirm_calls_render_schedule(monkeypatch) -> None:
 
     await schedule.handle_confirm_yes(callback, session, state, user)
 
+    mock_transition.assert_awaited_once_with(session, sub.id, "scheduled", expected={"pending"})
     mock_render_schedule.assert_awaited_once_with(callback.bot, session)
     assert state.state == ModeratorReview.viewing_post
 
@@ -79,9 +81,9 @@ async def _run_confirm_with_existing_pub(monkeypatch, pub) -> tuple[AsyncMock, A
     monkeypatch.setattr(schedule, "get_submission_with_user", AsyncMock(return_value=sub))
     monkeypatch.setattr(schedule.edit_lock, "extend_lock", AsyncMock(return_value=True))
     monkeypatch.setattr(schedule, "get_publication_by_submission", AsyncMock(return_value=pub))
+    monkeypatch.setattr(schedule, "reschedule_publication", AsyncMock(return_value=True))
     monkeypatch.setattr(schedule, "create_publication", AsyncMock(return_value=pub))
     monkeypatch.setattr(schedule, "update_submission_status", AsyncMock())
-    monkeypatch.setattr(schedule, "update_publication_time", AsyncMock())
     monkeypatch.setattr(schedule, "cancel_scheduled", AsyncMock())
     monkeypatch.setattr(schedule, "schedule_post", AsyncMock())
     monkeypatch.setattr(schedule.topic_notifications, "notify_scheduled", notify_scheduled)
@@ -114,6 +116,90 @@ async def test_schedule_confirm_new_time_notifies_reschedule(monkeypatch) -> Non
 
     notify_rescheduled.assert_awaited_once()
     notify_scheduled.assert_not_awaited()
+
+
+async def test_schedule_confirm_double_click_loser_creates_nothing(monkeypatch) -> None:
+    """Loser of the atomic pending→scheduled claim must not create a publication."""
+    session = AsyncMock()
+    user = make_user()
+    sub = make_submission(sub_id=6, status="pending", caption="Test", tags=["Art"])
+    callback = make_callback()
+    state = FakeState({
+        "sub_id": 6,
+        "pub_year": 2027,
+        "pub_month": 1,
+        "pub_day": 15,
+        "pub_hour": 12,
+        "pub_minute": 0,
+        "actions_message_id": 10,
+        "media_message_ids": [],
+    })
+
+    create_pub = AsyncMock()
+    mock_schedule_post = AsyncMock()
+    monkeypatch.setattr(schedule, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(schedule.edit_lock, "extend_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(schedule, "get_publication_by_submission", AsyncMock(return_value=None))
+    monkeypatch.setattr(schedule, "transition_submission_status", AsyncMock(return_value=False))
+    monkeypatch.setattr(schedule, "create_publication", create_pub)
+    monkeypatch.setattr(schedule, "update_submission_status", AsyncMock())
+    monkeypatch.setattr(schedule, "cancel_scheduled", AsyncMock())
+    monkeypatch.setattr(schedule, "schedule_post", mock_schedule_post)
+    monkeypatch.setattr(schedule.topic_notifications, "notify_scheduled", AsyncMock())
+    monkeypatch.setattr(schedule.topic_notifications, "notify_rescheduled", AsyncMock())
+    monkeypatch.setattr(schedule.topics, "update_submission_card", AsyncMock())
+    monkeypatch.setattr(schedule.topics, "request_topic_title_sync", AsyncMock())
+    monkeypatch.setattr(schedule, "_render_queue", AsyncMock())
+    monkeypatch.setattr(schedule, "_render_schedule", AsyncMock())
+
+    await schedule.handle_confirm_yes(callback, session, state, user)
+
+    create_pub.assert_not_called()
+    mock_schedule_post.assert_not_called()
+    callback.answer.assert_awaited_once_with(msg.SUBMISSION_NOT_AVAILABLE, show_alert=True)
+
+
+async def test_schedule_confirm_reschedule_loser_spares_job(monkeypatch) -> None:
+    """Loser of the guarded publish_at update must not cancel or re-schedule anything."""
+    other_time = datetime(2027, 1, 15, 18, 0, tzinfo=ZoneInfo(config.timezone))
+    pub = make_publication(pub_id=2, submission_id=6, publish_at=other_time)
+    session = AsyncMock()
+    user = make_user()
+    sub = make_submission(sub_id=6, status="scheduled", caption="Test", tags=["Art"])
+    callback = make_callback()
+    state = FakeState({
+        "sub_id": 6,
+        "pub_year": 2027,
+        "pub_month": 1,
+        "pub_day": 15,
+        "pub_hour": 12,
+        "pub_minute": 0,
+        "actions_message_id": 10,
+        "media_message_ids": [],
+    })
+
+    mock_cancel = AsyncMock()
+    mock_schedule_post = AsyncMock()
+    notify_rescheduled = AsyncMock()
+    monkeypatch.setattr(schedule, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(schedule.edit_lock, "extend_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(schedule, "get_publication_by_submission", AsyncMock(return_value=pub))
+    monkeypatch.setattr(schedule, "reschedule_publication", AsyncMock(return_value=False))
+    monkeypatch.setattr(schedule, "cancel_scheduled", mock_cancel)
+    monkeypatch.setattr(schedule, "schedule_post", mock_schedule_post)
+    monkeypatch.setattr(schedule.topic_notifications, "notify_scheduled", AsyncMock())
+    monkeypatch.setattr(schedule.topic_notifications, "notify_rescheduled", notify_rescheduled)
+    monkeypatch.setattr(schedule.topics, "update_submission_card", AsyncMock())
+    monkeypatch.setattr(schedule.topics, "request_topic_title_sync", AsyncMock())
+    monkeypatch.setattr(schedule, "_render_queue", AsyncMock())
+    monkeypatch.setattr(schedule, "_render_schedule", AsyncMock())
+
+    await schedule.handle_confirm_yes(callback, session, state, user)
+
+    mock_cancel.assert_not_called()
+    mock_schedule_post.assert_not_called()
+    notify_rescheduled.assert_not_awaited()
+    callback.answer.assert_awaited_once_with(msg.SUBMISSION_NOT_AVAILABLE, show_alert=True)
 
 
 async def test_calendar_day_shows_busy_block_and_marks_hour(monkeypatch) -> None:

@@ -1,5 +1,6 @@
 """Submission-related DB queries."""
 
+from collections.abc import Collection
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select, update
@@ -93,6 +94,29 @@ async def update_submission_status(
     )
     await session.execute(stmt)
     await session.flush()
+
+
+async def transition_submission_status(
+    session: AsyncSession,
+    sub_id: int,
+    new_status: str,
+    *,
+    expected: Collection[str],
+) -> bool:
+    """Move a submission to *new_status* only from one of *expected* statuses.
+
+    Returns ``True`` if this call performed the transition. The status guard in
+    the WHERE clause makes check-and-set atomic: of two concurrent clicks exactly
+    one gets ``True``, the loser gets ``False`` and must skip every side effect.
+    """
+    stmt = (
+        update(Submission)
+        .where(Submission.id == sub_id, Submission.status.in_(list(expected)))
+        .values(status=new_status, updated_at=func.now())
+    )
+    result = await session.execute(stmt)
+    await session.flush()
+    return result.rowcount > 0
 
 
 async def update_submission_tags(

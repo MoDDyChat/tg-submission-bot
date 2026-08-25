@@ -8,6 +8,12 @@ A Telegram bot for a creative content submission system (art, animations, video,
 
 ---
 
+## Инварианты
+
+- **`services/topics.py` — единственная точка контакта с форумными топиками.** Создание/переименование/закрытие топика, карточки постов и их синхронизация идут только через этот сервис; прямые вызовы `create_forum_topic` / `edit_forum_topic` / правка карточек из хендлеров расходятся с outbox-версионированием (`title_sync_version`) и с self-heal по `card_rendered_hash`, из-за чего карточка или заголовок навсегда застревают в старом состоянии.
+
+---
+
 ## Stack
 
 | Component | Technology | Purpose |
@@ -153,6 +159,8 @@ Registration order (outer → inner):
 1. **ThrottleMiddleware** — 20 requests / 10s per user; cuts off spam before a DB session is opened; on `CallbackQuery` shows an alert «Слишком много запросов» (too many requests)
 2. **DbSessionMiddleware** — creates an AsyncSession, injects it into `data["session"]`, commits on success / rolls back on `BaseException`
 3. **AuthMiddleware** — upserts the user (`INSERT ... ON CONFLICT`) → `data["db_user"]`; logs new users
+
+Отдельно от цепочки апдейтов работает **session-level request middleware** `middlewares/silent_chats.py`: она проставляет `disable_notification=True` любому методу Bot API, адресованному в `MODERATOR_GROUP_ID`, если вызов не задал флаг явно — модгруппа не звенит на каждой служебной правке карточки. Тот же флаг глушит DM админам в `services/admin_notifications.py`. Выключается через `SILENT_MODERATOR_NOTIFICATIONS=false`.
 
 Every handler gets:
 - `session: AsyncSession` — SQLAlchemy session (auto-committed on success)
@@ -324,6 +332,8 @@ create_async_engine(
 - Alembic migrations run on a **separate engine** without these timeouts (`NullPool`) — a legitimate table rewrite can take longer, and aborting it mid-way is worse than a slow startup. The same applies to waiting on the advisory lock: on the main engine, `statement_timeout` would kill `pg_advisory_lock` after 30s
 
 **Transaction boundary invariant:** external I/O (Telegram API, `asyncio.sleep` in a retry) is **never performed inside an open transaction** that has already written something. The pattern is claim → call → record, each DB phase separate (`process_next_topic_title_sync`, `reconcile_submission_cards`). This rule also applies to handlers: `cmd_start_review`, `handle_close`, `_cancel_viewing_post`, `handle_media_done` commit the lock/status write **before** updating the card in Telegram; `cleanup_edit_locks_job` first commits the deletion of expired locks and only then talks to Telegram for each one — in its own short session; `_render_queue_inner` / `_render_schedule_inner` close the read-only transaction before the first `editMessageText`. Intake follows the same rule end to end: `submit_single_media`, `submit_text` and `_finalize_media_group` (`services/submission_intake.py`) commit the new post (and its media rows) before replying to the author or making any Telegram call, and the follow-up `_publish_submission_to_topic` then runs `ensure_user_topic`, `post_submission_card` and `request_topic_title_sync` as three separate committed steps. Breaking this rule once froze the title worker for two days: a network failure hung a coroutine, the transaction stayed open, and the `INSERT` for new users queued up behind its lock; the same failure mode later lost post #377 and its card when intake held one transaction open across the topic-creation Telegram calls
+
+**Atomic state transitions:** the boundary rule above orders I/O against the DB, but does not by itself protect against handler races. Check-then-act — read the status first, then an unconditional `UPDATE ... WHERE id=:id` — is unsafe: the session commits only when the handler returns (DbSessionMiddleware), so two callbacks processed in parallel both pass the status check and both apply the update, each going on to fire its side effects (notifications, card/topic edits). The fix is a guard query that makes check-and-set atomic: the expected statuses live in the WHERE clause and `rowcount` tells the caller whether it won. The atomic latches are `transition_submission_status(sub_id, new_status, expected=...)`, `ban_user` / `unban_user` (both return `bool`), `delete_media_unless_last`, `reschedule_publication`, plus the pre-existing exemplar `mark_publication_dead`. Rule: whoever gets `False` lost the race — it answers the user (alert or message) and performs **no** side effects at all. Motivating incident: post #389 rejected via a double click produced three rejection notifications in the moderator thread
 
 ---
 

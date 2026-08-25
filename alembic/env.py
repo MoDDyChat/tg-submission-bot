@@ -15,8 +15,8 @@ sys.path.insert(0, str(BASE_DIR / "src"))
 
 load_dotenv(BASE_DIR / ".env")
 
-from core.config import config as app_config
-from db.models import Base
+from core.config import config as app_config  # noqa: E402
+from db.models import Base  # noqa: E402
 
 # Alembic Config object
 config = context.config

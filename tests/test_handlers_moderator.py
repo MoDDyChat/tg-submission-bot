@@ -263,7 +263,7 @@ async def test_publish_now_confirm_recovers_state_after_publish_failure(monkeypa
 
     monkeypatch.setattr(publish_now, "get_submission_with_user", AsyncMock(return_value=submission))
     monkeypatch.setattr(publish_now, "create_publication", AsyncMock(return_value=publication))
-    monkeypatch.setattr(publish_now, "update_submission_status", update_status)
+    monkeypatch.setattr(publish_now, "transition_submission_status", update_status)
     monkeypatch.setattr(publish_now, "publish_post", AsyncMock(side_effect=PublishFailedError("boom")))
     monkeypatch.setattr(publish_now, "get_publication", AsyncMock(return_value=publication))
     monkeypatch.setattr(publish_now, "delete_publication", AsyncMock())

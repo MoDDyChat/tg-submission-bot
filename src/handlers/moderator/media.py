@@ -10,7 +10,7 @@ import core.messages as msg
 from core.config import config
 from core.logging import get_logger
 from db.models import User
-from db.queries import get_submission_with_user, get_submission_media, delete_media
+from db.queries import get_submission_with_user, get_submission_media, delete_media_unless_last
 from filters.not_command import NotCommand
 from keyboards.callbacks import SubmissionCB, MediaCB
 from keyboards.moderator import media_manager_kb
@@ -97,9 +97,14 @@ async def handle_media_delete(
         return
     media = await get_submission_media(session, sub_id)
     if len(media) <= 1:
+        await session.rollback()
         await callback.answer(msg.MEDIA_DELETE_LAST_FORBIDDEN, show_alert=True)
         return
-    await delete_media(session, callback_data.media_id, sub_id)
+    deleted = await delete_media_unless_last(session, callback_data.media_id, sub_id)
+    if not deleted:
+        await session.rollback()
+        await callback.answer(msg.MEDIA_DELETE_LAST_FORBIDDEN, show_alert=True)
+        return
     await session.commit()
     media = await get_submission_media(session, sub_id)
     await callback.message.edit_text(

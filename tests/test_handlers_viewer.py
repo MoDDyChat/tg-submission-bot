@@ -180,8 +180,8 @@ async def test_handle_viewer_cancel_updates_status_and_finalizes_mod_channel(mon
     session = AsyncMock()
     sub = make_submission(sub_id=7, user=db_user, status="pending")
     monkeypatch.setattr(viewer, "get_submission_with_user", AsyncMock(return_value=sub))
-    update_status = AsyncMock()
-    monkeypatch.setattr(viewer, "update_submission_status", update_status)
+    transition = AsyncMock(return_value=True)
+    monkeypatch.setattr(viewer, "transition_submission_status", transition)
     monkeypatch.setattr(viewer.topic_notifications, "notify_viewer_cancelled", AsyncMock())
     monkeypatch.setattr(viewer.topics, "finalize_submission_card", AsyncMock())
     monkeypatch.setattr(viewer.topics, "request_topic_title_sync", AsyncMock())
@@ -191,7 +191,33 @@ async def test_handle_viewer_cancel_updates_status_and_finalizes_mod_channel(mon
     await viewer.handle_viewer_cancel(callback, SimpleNamespace(sub_id=7), session, db_user)
 
     assert sub.status == "cancelled"
-    update_status.assert_awaited_once_with(session, 7, "cancelled")
+    transition.assert_awaited_once_with(session, 7, "cancelled", expected={"pending"})
+    session.commit.assert_awaited_once()
     viewer.topics.finalize_submission_card.assert_awaited_once()
     callback.message.edit_text.assert_awaited_once_with(msg.SUBMISSION_CANCELLED.format(sub_id=7))
     callback.answer.assert_awaited_once_with(msg.SUBMISSION_CANCELLED.format(sub_id=7))
+
+
+async def test_handle_viewer_cancel_loses_race_and_skips_side_effects(monkeypatch) -> None:
+    db_user = make_user(user_id=11)
+    session = AsyncMock()
+    sub = make_submission(sub_id=7, user=db_user, status="pending")
+    monkeypatch.setattr(viewer, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(viewer, "transition_submission_status", AsyncMock(return_value=False))
+    monkeypatch.setattr(viewer.topic_notifications, "notify_viewer_cancelled", AsyncMock())
+    monkeypatch.setattr(viewer.topics, "finalize_submission_card", AsyncMock())
+    monkeypatch.setattr(viewer.topics, "request_topic_title_sync", AsyncMock())
+    monkeypatch.setattr(viewer, "_render_queue", AsyncMock())
+    callback = make_callback(message=make_message())
+
+    await viewer.handle_viewer_cancel(callback, SimpleNamespace(sub_id=7), session, db_user)
+
+    viewer.topic_notifications.notify_viewer_cancelled.assert_not_awaited()
+    viewer.topics.finalize_submission_card.assert_not_awaited()
+    viewer.topics.request_topic_title_sync.assert_not_awaited()
+    viewer._render_queue.assert_not_awaited()
+    session.commit.assert_not_awaited()
+    callback.message.edit_text.assert_not_awaited()
+    callback.answer.assert_awaited_once_with(
+        msg.SUBMISSION_CANT_CANCEL.format(status="cancelled"), show_alert=True
+    )

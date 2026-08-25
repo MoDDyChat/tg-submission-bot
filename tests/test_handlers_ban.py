@@ -143,6 +143,31 @@ async def test_ban_reason_handles_concurrent_grant_race(monkeypatch) -> None:
     assert state.cleared is False
 
 
+async def test_ban_reason_skips_repeat_when_already_banned(monkeypatch) -> None:
+    """ban_user returned False: user was banned concurrently, no notifications."""
+    session = AsyncMock()
+    state = FakeState({"sub_id": 5, "ban_user_id": 9, "ban_user_display": "@artist"})
+    db_user = make_user(user_id=2)
+    message = make_message(text="Spam")
+
+    sub = make_submission(sub_id=5, status="pending")
+    monkeypatch.setattr(ban.edit_lock, "extend_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(ban, "ban_user", AsyncMock(return_value=False))
+    monkeypatch.setattr(ban, "get_submission_with_user", AsyncMock(return_value=sub))
+    notify = AsyncMock()
+    monkeypatch.setattr(ban.admin_notifications, "notify_admins", notify)
+    notify_banned = AsyncMock()
+    monkeypatch.setattr(ban.topic_notifications, "notify_banned", notify_banned)
+
+    await ban.handle_ban_reason(message, session, state, db_user)
+
+    session.rollback.assert_awaited()
+    notify.assert_not_awaited()
+    notify_banned.assert_not_awaited()
+    message.answer.assert_awaited_once_with(msg.USER_ALREADY_BANNED)
+    assert state.cleared is False
+
+
 async def test_ban_reason_aborts_on_lock_lost(monkeypatch) -> None:
     session = AsyncMock()
     state = FakeState({"sub_id": 5, "ban_user_id": 9})

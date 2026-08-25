@@ -17,9 +17,15 @@ from db.queries.publications import (
     list_dead_publications,
     mark_publication_dead,
     mark_published,
+    reschedule_publication,
     update_publication_time,
 )
-from db.queries.submission_media import add_media, delete_media, get_submission_media
+from db.queries.submission_media import (
+    add_media,
+    delete_media,
+    delete_media_unless_last,
+    get_submission_media,
+)
 from db.queries.submissions import (
     count_recent_rejections,
     count_submissions_by_status,
@@ -29,6 +35,7 @@ from db.queries.submissions import (
     get_submission_by_topic_card_id,
     get_submission_with_user,
     list_active_submissions_without_card,
+    transition_submission_status,
     update_submission_caption,
     update_submission_status,
     update_submission_tags,
@@ -102,10 +109,12 @@ __all__ = [
     "list_dead_publications",
     "mark_publication_dead",
     "mark_published",
+    "reschedule_publication",
     "update_publication_time",
     # submission_media
     "add_media",
     "delete_media",
+    "delete_media_unless_last",
     "get_submission_media",
     # submissions
     "count_recent_rejections",
@@ -116,6 +125,7 @@ __all__ = [
     "get_submission_by_topic_card_id",
     "get_submission_with_user",
     "list_active_submissions_without_card",
+    "transition_submission_status",
     "update_submission_caption",
     "update_submission_status",
     "update_submission_tags",

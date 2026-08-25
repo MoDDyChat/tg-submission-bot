@@ -20,7 +20,7 @@ from db.queries import (
     delete_publication,
     get_publication,
     get_submission_with_user,
-    update_submission_status,
+    transition_submission_status,
 )
 from keyboards.callbacks import ConfirmCB, SubmissionCB
 from keyboards.moderator import confirm_publish_now_kb
@@ -106,9 +106,20 @@ async def handle_publish_now_confirm(
         await callback.answer(msg.MODERATOR_LOCK_LOST, show_alert=True)
         return
 
+    # Claim the post atomically before creating the publication: of two
+    # concurrent confirmations exactly one wins, the loser must not create
+    # a second Publication or publish twice.
+    won = await transition_submission_status(
+        session, sub_id, "scheduled", expected=PUBLISHABLE_STATUSES,
+    )
+    if not won:
+        await callback.answer(msg.SUBMISSION_NOT_AVAILABLE, show_alert=True)
+        await _delete_tracked_messages(callback.bot, callback.message.chat.id, data)
+        await state.clear()
+        return
+
     now_utc = datetime.now(timezone.utc)
     pub = await create_publication(session, sub_id, sub.caption, now_utc)
-    await update_submission_status(session, sub_id, "scheduled")
     await session.commit()
 
     try:
@@ -146,9 +157,12 @@ async def handle_publish_now_confirm(
         async with session_factory() as recovery_session:
             fresh_pub = await get_publication(recovery_session, pub.id)
             if fresh_pub and fresh_pub.published_at is None:
-                await delete_publication(recovery_session, fresh_pub.id)
-                await update_submission_status(recovery_session, sub_id, "pending")
-                await recovery_session.commit()
+                reverted = await transition_submission_status(
+                    recovery_session, sub_id, "pending", expected={"scheduled"},
+                )
+                if reverted:
+                    await delete_publication(recovery_session, fresh_pub.id)
+                    await recovery_session.commit()
 
         await state.set_state(ModeratorReview.viewing_post)
         await state.update_data(
@@ -168,9 +182,12 @@ async def handle_publish_now_confirm(
         async with session_factory() as recovery_session:
             fresh_pub = await get_publication(recovery_session, pub.id)
             if fresh_pub and fresh_pub.published_at is None:
-                await delete_publication(recovery_session, fresh_pub.id)
-                await update_submission_status(recovery_session, sub_id, "pending")
-                await recovery_session.commit()
+                reverted = await transition_submission_status(
+                    recovery_session, sub_id, "pending", expected={"scheduled"},
+                )
+                if reverted:
+                    await delete_publication(recovery_session, fresh_pub.id)
+                    await recovery_session.commit()
         await state.set_state(ModeratorReview.viewing_post)
         await state.update_data(
             sub_id=sub_id,
@@ -187,9 +204,12 @@ async def handle_publish_now_confirm(
         async with session_factory() as recovery_session:
             fresh_pub = await get_publication(recovery_session, pub.id)
             if fresh_pub and fresh_pub.published_at is None:
-                await delete_publication(recovery_session, fresh_pub.id)
-                await update_submission_status(recovery_session, sub_id, "pending")
-                await recovery_session.commit()
+                reverted = await transition_submission_status(
+                    recovery_session, sub_id, "pending", expected={"scheduled"},
+                )
+                if reverted:
+                    await delete_publication(recovery_session, fresh_pub.id)
+                    await recovery_session.commit()
         await state.set_state(ModeratorReview.viewing_post)
         await state.update_data(
             sub_id=sub_id,

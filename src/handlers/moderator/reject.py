@@ -9,7 +9,7 @@ import core.messages as msg
 from core.config import config
 from core.logging import get_logger
 from db.models import User
-from db.queries import get_submission_with_user, update_submission_status
+from db.queries import get_submission_with_user, transition_submission_status
 from filters.not_command import NotCommand
 from keyboards.callbacks import SubmissionCB
 from services import edit_lock, topic_notifications, topics
@@ -87,11 +87,21 @@ async def handle_reject_reason(
 
     reason_html = get_html_text(message)
 
+    # The guarded row update decides the winner of a double click; run it
+    # before dropping the publication so the loser never deletes a row that
+    # belongs to the winner's terminal transition.
+    won = await transition_submission_status(
+        session, sub_id, "rejected", expected={"pending", "scheduled"},
+    )
+    if not won:
+        await message.answer(msg.SUBMISSION_NOT_AVAILABLE)
+        await state.clear()
+        return
+
     # A scheduled post can be rejected straight from the card — drop its
     # publication so no orphan job/row survives the terminal transition.
     dropped_pub_id = await _drop_pending_publication(session, sub_id)
 
-    await update_submission_status(session, sub_id, "rejected")
     sub.status = "rejected"
     await session.commit()
     # Only now that the delete is durable — cancelling a job cannot be undone.
@@ -161,9 +171,18 @@ async def handle_reject_silent(
         await callback.answer(msg.MODERATOR_LOCK_LOST, show_alert=True)
         return
 
+    # The guarded row update decides the winner of a double click; run it
+    # before dropping the publication so the loser never deletes a row that
+    # belongs to the winner's terminal transition.
+    won = await transition_submission_status(
+        session, sub_id, "rejected", expected={"pending", "scheduled"},
+    )
+    if not won:
+        await callback.answer(msg.SUBMISSION_NOT_AVAILABLE, show_alert=True)
+        return
+
     dropped_pub_id = await _drop_pending_publication(session, sub_id)
 
-    await update_submission_status(session, sub_id, "rejected")
     sub.status = "rejected"
     await session.commit()
     # Only now that the delete is durable — cancelling a job cannot be undone.

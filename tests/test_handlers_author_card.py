@@ -148,6 +148,33 @@ async def test_handle_ban_reason_handles_concurrent_grant_race(monkeypatch) -> N
     assert state.cleared is True
 
 
+async def test_handle_ban_reason_already_banned_no_notify(monkeypatch) -> None:
+    """ban_user → False (lost a race against a concurrent ban): rollback, tell
+    the moderator, clear FSM — no admin/topic notifications, no card refresh."""
+    session = AsyncMock()
+    state = FakeState({"author_card_user_id": 9})
+    db_user = make_user(user_id=2)
+    message = make_message(text="Spam")
+
+    monkeypatch.setattr(author_card, "ban_user", AsyncMock(return_value=False))
+    notify_admins = AsyncMock()
+    monkeypatch.setattr(author_card.admin_notifications, "notify_admins", notify_admins)
+    notify_unbanned = AsyncMock()
+    monkeypatch.setattr(author_card.topic_notifications, "notify_unbanned", notify_unbanned)
+    request_mock = AsyncMock()
+    monkeypatch.setattr(author_card, "request_author_card", request_mock)
+
+    await author_card.handle_ban_reason(message, session, state, db_user)
+
+    session.rollback.assert_awaited_once()
+    session.commit.assert_not_awaited()
+    message.answer.assert_awaited_once_with(msg.USER_ALREADY_BANNED)
+    assert state.cleared is True
+    notify_admins.assert_not_awaited()
+    notify_unbanned.assert_not_awaited()
+    request_mock.assert_not_called()
+
+
 # ── unban from card ──────────────────────────────────────────────────
 
 async def test_handle_unban_clears_flag_and_marks_card_dirty(monkeypatch) -> None:
@@ -170,6 +197,36 @@ async def test_handle_unban_clears_flag_and_marks_card_dirty(monkeypatch) -> Non
     unban_mock.assert_awaited_once_with(session, 9)
     request_mock.assert_called_once_with(9)
     callback.answer.assert_awaited_once()
+
+
+async def test_handle_unban_already_unbanned_no_notify(monkeypatch) -> None:
+    """unban_user → False (user was not banned): rollback and alert only —
+    no admin/topic notifications, no card refresh."""
+    session = AsyncMock()
+    db_user = make_user(user_id=2)
+    target = make_user(user_id=9, is_banned=False)
+    callback = make_callback()
+
+    monkeypatch.setattr(author_card, "get_user_by_id", AsyncMock(return_value=target))
+    monkeypatch.setattr(author_card, "unban_user", AsyncMock(return_value=False))
+    notify_admins = AsyncMock()
+    monkeypatch.setattr(author_card.admin_notifications, "notify_admins", notify_admins)
+    notify_unbanned = AsyncMock()
+    monkeypatch.setattr(author_card.topic_notifications, "notify_unbanned", notify_unbanned)
+    topic_sync = AsyncMock()
+    monkeypatch.setattr(author_card.topics, "request_topic_title_sync", topic_sync)
+    request_mock = AsyncMock()
+    monkeypatch.setattr(author_card, "request_author_card", request_mock)
+
+    await author_card.handle_unban(callback, AuthorCardCB(action="unban", user_id=9), session, db_user)
+
+    session.rollback.assert_awaited_once()
+    session.commit.assert_not_awaited()
+    callback.answer.assert_awaited_once_with(msg.USER_ALREADY_UNBANNED, show_alert=True)
+    notify_admins.assert_not_awaited()
+    notify_unbanned.assert_not_awaited()
+    topic_sync.assert_not_awaited()
+    request_mock.assert_not_called()
 
 
 # ── note ─────────────────────────────────────────────────────────────

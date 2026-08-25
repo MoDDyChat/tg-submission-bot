@@ -17,7 +17,8 @@ from db.queries import (
     create_publication,
     get_publication_by_submission,
     get_submission_with_user,
-    update_publication_time,
+    reschedule_publication,
+    transition_submission_status,
     update_submission_status,
 )
 from keyboards.calendar import calendar_kb, hours_kb, minutes_kb
@@ -373,18 +374,51 @@ async def handle_confirm_yes(
 
     # Reschedule or create publication
     existing_pub = await get_publication_by_submission(session, sub_id)
-    is_reschedule = existing_pub is not None
-    time_unchanged = is_reschedule and existing_pub.publish_at == publish_at_utc
-    if existing_pub:
-        cancel_scheduled(existing_pub.id)  # Cancel old job before DB update to eliminate race window
-        await update_publication_time(session, existing_pub.id, publish_at_utc)
+    if existing_pub is None:
+        # Primary scheduling: claim the submission atomically so a double click
+        # cannot create two publications or two APScheduler jobs.
+        won = await transition_submission_status(
+            session, sub_id, "scheduled", expected={"pending"},
+        )
+        if not won:
+            await callback.message.edit_text(msg.SUBMISSION_NOT_AVAILABLE)
+            await state.clear()
+            await callback.answer(msg.SUBMISSION_NOT_AVAILABLE, show_alert=True)
+            return
+        pub = await create_publication(session, sub_id, sub.caption, publish_at_utc)
+        is_reschedule = False
+    else:
+        is_reschedule = True
+        if existing_pub.publish_at == publish_at_utc:
+            logger.info("Время публикации поста #%d не изменилось — уведомление пропущено", sub_id)
+            await callback.answer()
+            return
+        # Write Submission before Publication to match the lock order used by
+        # unschedule.py / reject.py (Submission → Publication); the reverse
+        # order deadlocks on concurrent reschedule vs unschedule/reject.
+        await update_submission_status(session, sub_id, "scheduled")
+        # The guarded row update decides the winner of a double click; run it
+        # before cancel_scheduled so the loser never drops the APScheduler job
+        # the winner has just installed.
+        moved = await reschedule_publication(
+            session, existing_pub.id,
+            old_publish_at=existing_pub.publish_at, new_publish_at=publish_at_utc,
+        )
+        if not moved:
+            # update_submission_status above already wrote to the session; roll
+            # back so the loser's updated_at bump is not auto-committed by
+            # DbSessionMiddleware on handler return (mirrors handle_media_delete).
+            await session.rollback()
+            await callback.answer(msg.SUBMISSION_NOT_AVAILABLE, show_alert=True)
+            return
         existing_pub.edited_caption = sub.caption
         pub = existing_pub
-    else:
-        pub = await create_publication(session, sub_id, sub.caption, publish_at_utc)
-    await update_submission_status(session, sub_id, "scheduled")
+
     sub.status = "scheduled"
     await session.commit()
+    # Only now that the reschedule is durable — cancelling a job cannot be undone.
+    if is_reschedule:
+        cancel_scheduled(existing_pub.id)
 
     # Schedule (or replace) the APScheduler job
     schedule_post(
@@ -392,9 +426,7 @@ async def handle_confirm_yes(
         submission_id=sub.id, edited_caption=sub.caption,
     )
 
-    if time_unchanged:
-        logger.info("Время публикации поста #%d не изменилось — уведомление пропущено", sub_id)
-    elif is_reschedule:
+    if is_reschedule:
         await topic_notifications.notify_rescheduled(callback.bot, session, sub, db_user, publish_at_utc)
     else:
         await topic_notifications.notify_scheduled(callback.bot, session, sub, db_user, publish_at_utc)

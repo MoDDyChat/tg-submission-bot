@@ -114,12 +114,31 @@ async def test_media_delete_last_forbidden(monkeypatch) -> None:
     monkeypatch.setattr(media.edit_lock, "extend_lock", AsyncMock(return_value=True))
     monkeypatch.setattr(media, "get_submission_media", AsyncMock(return_value=single_media))
     delete_mock = AsyncMock()
-    monkeypatch.setattr(media, "delete_media", delete_mock)
+    monkeypatch.setattr(media, "delete_media_unless_last", delete_mock)
 
     await media.handle_media_delete(callback, callback_data, session, state, db_user)
 
     callback.answer.assert_awaited_once_with(msg.MEDIA_DELETE_LAST_FORBIDDEN, show_alert=True)
     delete_mock.assert_not_awaited()
+
+
+async def test_media_delete_atomic_guard_false(monkeypatch) -> None:
+    session = AsyncMock()
+    state = FakeState()
+    db_user = make_user()
+    two = _two_media()
+    callback = make_callback()
+    callback_data = AsyncMock(sub_id=5, media_id=1)
+
+    monkeypatch.setattr(media.edit_lock, "extend_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(media, "get_submission_media", AsyncMock(return_value=two))
+    monkeypatch.setattr(media, "delete_media_unless_last", AsyncMock(return_value=False))
+
+    await media.handle_media_delete(callback, callback_data, session, state, db_user)
+
+    callback.message.edit_text.assert_not_awaited()
+    session.commit.assert_not_awaited()
+    callback.answer.assert_awaited_once_with(msg.MEDIA_DELETE_LAST_FORBIDDEN, show_alert=True)
 
 
 async def test_media_delete_ok(monkeypatch) -> None:
@@ -132,12 +151,13 @@ async def test_media_delete_ok(monkeypatch) -> None:
 
     monkeypatch.setattr(media.edit_lock, "extend_lock", AsyncMock(return_value=True))
     monkeypatch.setattr(media, "get_submission_media", AsyncMock(return_value=two))
-    delete_mock = AsyncMock()
-    monkeypatch.setattr(media, "delete_media", delete_mock)
+    delete_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(media, "delete_media_unless_last", delete_mock)
 
     await media.handle_media_delete(callback, callback_data, session, state, db_user)
 
     delete_mock.assert_awaited_once_with(session, 1, 5)
+    session.commit.assert_awaited_once()
     callback.message.edit_text.assert_awaited_once()
     callback.answer.assert_awaited_once_with(msg.MEDIA_DELETED)
 

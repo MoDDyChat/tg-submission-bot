@@ -14,7 +14,7 @@ from core.logging import fmt_user, get_logger
 from db.models import User
 from db.queries import (
     get_submission_with_user,
-    update_submission_status,
+    transition_submission_status,
 )
 from filters.is_moderator import IsModerator
 from keyboards.callbacks import ViewerCancelCB
@@ -131,8 +131,20 @@ async def handle_viewer_cancel(
         )
         return
 
-    await update_submission_status(session, sub.id, "cancelled")
+    won = await transition_submission_status(
+        session, sub.id, "cancelled", expected={"pending"}
+    )
+    if not won:
+        # Lost the atomic check-and-set race: someone else already finalised
+        # the post — skip every side effect.
+        await callback.answer(
+            msg.SUBMISSION_CANT_CANCEL.format(status="cancelled"), show_alert=True
+        )
+        return
+
     sub.status = "cancelled"
+    # Claim → call → record: make the transition durable before any Telegram I/O.
+    await session.commit()
     await topic_notifications.notify_viewer_cancelled(callback.bot, session, sub)
     await topics.finalize_submission_card(callback.bot, session, sub)
     await topics.request_topic_title_sync(session, sub.user.id)

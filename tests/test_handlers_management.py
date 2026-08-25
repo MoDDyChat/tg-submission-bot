@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import core.messages as msg
 from aiogram.types import CallbackQuery, Chat, Message, User as TgUser
 from handlers.moderator import management
-from keyboards.callbacks import ManagementCB
+from keyboards.callbacks import ManagementCB, UnbanCB
 from tests.helpers import FakeSessionFactory, FakeState, make_bot, make_callback, make_user
 
 
@@ -320,6 +320,30 @@ async def test_handle_recover_concurrent_calls_start_single_task(monkeypatch) ->
     assert recover_calls == 1
     notify.assert_awaited_once()
     assert management._recover_task is None
+
+
+# ── handle_unban_select ───────────────────────────────────────────────
+
+async def test_handle_unban_select_already_unbanned_skips_side_effects(monkeypatch) -> None:
+    """unban_user → False: alert shown, no admin notification, no re-render."""
+    session = AsyncMock()
+    state = FakeState()
+    db_user = make_user(user_id=2, telegram_id=202)
+    callback = make_callback()
+    callback_data = UnbanCB(user_id=7)
+    render = AsyncMock()
+
+    monkeypatch.setattr(management, "_guard_management_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(management, "get_user_by_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(management, "unban_user", AsyncMock(return_value=False))
+    monkeypatch.setattr(management.admin_notifications, "notify_admins", AsyncMock())
+    monkeypatch.setattr(management, "_render_banned_users", render)
+
+    await management.handle_unban_select(callback, callback_data, session, state, db_user)
+
+    callback.answer.assert_awaited_once_with(msg.USER_ALREADY_UNBANNED, show_alert=True)
+    management.admin_notifications.notify_admins.assert_not_awaited()
+    render.assert_not_awaited()
 
 
 # ── handle_home / handle_close_management — releases all management locks ─

@@ -13,7 +13,7 @@ from db.queries import (
     delete_publication,
     get_publication_by_submission,
     get_submission_with_user,
-    update_submission_status,
+    transition_submission_status,
 )
 from keyboards.callbacks import SubmissionCB
 from keyboards.moderator import submission_actions_kb
@@ -55,15 +55,20 @@ async def handle_unschedule(
         await callback.answer(msg.MODERATOR_LOCK_LOST, show_alert=True)
         return
 
-    pub = await get_publication_by_submission(session, sub_id)
-    if pub is None:
+    # Claim the transition atomically before touching the publication so the
+    # loser of a double click never cancels or deletes the same publication.
+    won = await transition_submission_status(
+        session, sub_id, "pending", expected={"scheduled"},
+    )
+    if not won:
         await callback.answer(msg.SUBMISSION_NOT_AVAILABLE, show_alert=True)
         return
 
-    cancel_scheduled(pub.id)
-    await delete_publication(session, pub.id)
+    pub = await get_publication_by_submission(session, sub_id)
+    if pub is not None:
+        cancel_scheduled(pub.id)
+        await delete_publication(session, pub.id)
 
-    await update_submission_status(session, sub_id, "pending")
     sub.status = "pending"
     await session.commit()
 

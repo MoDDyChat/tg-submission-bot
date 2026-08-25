@@ -1648,7 +1648,11 @@ async def handle_unban_select(
         await callback.answer(msg.MANAGEMENT_LOCK_LOST, show_alert=True)
         return
     target_user = await get_user_by_id(session, callback_data.user_id)
-    await unban_user(session, callback_data.user_id)
+    unbanned = await unban_user(session, callback_data.user_id)
+    if not unbanned:
+        await callback.answer(msg.USER_ALREADY_UNBANNED, show_alert=True)
+        return
+    await session.commit()
     logger.info("Пользователь id:%d разбанен", callback_data.user_id)
     request_author_card(callback_data.user_id)
     notice = msg.USER_UNBANNED.format(user=html.escape(f"id:{callback_data.user_id}"))

@@ -86,16 +86,30 @@ async def handle_ban_reason(
 
         sub = await get_submission_with_user(session, sub_id)
         if sub is not None and (sub.user.is_moderator or sub.user.is_admin):
+            # extend_lock above already wrote the edit-lock row; release it
+            # before the Telegram call, same as the refusal branches below.
+            await session.rollback()
             await message.answer(msg.BAN_TARGET_IS_MODERATOR)
             return
 
     try:
-        await ban_user(session, user_id, reason)
+        banned = await ban_user(session, user_id, reason)
     except CannotBanModeratorError:
         # Lost the race against a concurrent role grant: the row lock re-check
         # inside ban_user caught a moderator/admin flag the pre-check missed.
+        # ban_user holds FOR UPDATE on the user row; release it before any
+        # Telegram call.
+        await session.rollback()
         await message.answer(msg.BAN_TARGET_IS_MODERATOR)
         return
+    if not banned:
+        # Already banned — repeat request. Release the row lock and bail out
+        # with the state kept, same as the refusal branch above.
+        await session.rollback()
+        await message.answer(msg.USER_ALREADY_BANNED)
+        return
+    await session.commit()
+
     logger.info("Пользователь id:%d заблокирован. Причина: %s", user_id, reason)
     request_author_card(user_id)
     request_dashboard()

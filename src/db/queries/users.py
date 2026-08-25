@@ -58,12 +58,14 @@ async def get_or_create_user(
     return user, is_new
 
 
-async def ban_user(session: AsyncSession, user_id: int, reason: str) -> None:
+async def ban_user(session: AsyncSession, user_id: int, reason: str) -> bool:
     """Ban *user_id* unless they still hold a moderator/admin role.
 
     The row is locked ``FOR UPDATE`` and re-read so a concurrent role grant
     cannot slip past the handler's pre-check and leave a user both banned and
-    a moderator.
+    a moderator. The ``is_banned IS FALSE`` guard makes the ban idempotent:
+    ``False`` means the user was already banned (a repeated click), so callers
+    can skip duplicate admin notifications.
     """
     target = await session.get(
         User, user_id, with_for_update=True, populate_existing=True,
@@ -72,21 +74,28 @@ async def ban_user(session: AsyncSession, user_id: int, reason: str) -> None:
         raise CannotBanModeratorError()
     stmt = (
         update(User)
-        .where(User.id == user_id)
+        .where(User.id == user_id, User.is_banned.is_(False))
         .values(is_banned=True, ban_reason=reason, updated_at=func.now())
     )
-    await session.execute(stmt)
+    result = await session.execute(stmt)
     await session.flush()
+    return result.rowcount > 0
 
 
-async def unban_user(session: AsyncSession, user_id: int) -> None:
+async def unban_user(session: AsyncSession, user_id: int) -> bool:
+    """Unban *user_id*. Returns ``True`` if this call lifted the ban.
+
+    The ``is_banned IS TRUE`` guard makes the unban idempotent — ``False``
+    means the user was not banned.
+    """
     stmt = (
         update(User)
-        .where(User.id == user_id)
+        .where(User.id == user_id, User.is_banned.is_(True))
         .values(is_banned=False, ban_reason=None, updated_at=func.now())
     )
-    await session.execute(stmt)
+    result = await session.execute(stmt)
     await session.flush()
+    return result.rowcount > 0
 
 
 async def get_banned_users(session: AsyncSession) -> list[User]:

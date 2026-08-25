@@ -116,6 +116,29 @@ async def update_publication_time(
     await session.flush()
 
 
+async def reschedule_publication(
+    session: AsyncSession,
+    pub_id: int,
+    *,
+    old_publish_at: datetime,
+    new_publish_at: datetime,
+) -> bool:
+    """Move a publication to *new_publish_at* only if it still sits at *old_publish_at*.
+
+    The ``publish_at == old_publish_at`` guard makes the UPDATE atomic — of two
+    concurrent reschedule clicks that read the same old time, exactly one gets
+    ``True``, the loser gets ``False`` and must skip every side effect.
+    """
+    stmt = (
+        update(Publication)
+        .where(Publication.id == pub_id, Publication.publish_at == old_publish_at)
+        .values(publish_at=new_publish_at, dead_at=None, updated_at=func.now())
+    )
+    result = await session.execute(stmt)
+    await session.flush()
+    return result.rowcount > 0
+
+
 async def count_recent_publications(session: AsyncSession, since: datetime) -> int:
     """Count publications published at or after *since*."""
     stmt = (
