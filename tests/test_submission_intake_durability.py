@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+import logging
+from unittest.mock import AsyncMock, MagicMock
 
+from aiogram.exceptions import TelegramRetryAfter
 import pytest
 
 import core.messages as msg
+from handlers.errors import _TRANSIENT_ERRORS
 from services import submission_intake
 from tests.helpers import (
     FakeSessionFactory,
@@ -103,7 +106,7 @@ async def test_submit_text_commits_before_any_telegram_call(monkeypatch) -> None
 # ── сбои Telegram не откатывают пост ──────────────────────────────
 
 @pytest.mark.parametrize("failing", ["post_submission_card", "ensure_user_topic"])
-async def test_topic_failure_keeps_submission_and_warns_author(monkeypatch, failing) -> None:
+async def test_topic_failure_keeps_submission_without_extra_author_message(monkeypatch, failing) -> None:
     trace: list[str] = []
     session = _make_session(trace)
     message = make_message(photo=make_photo_sizes(("f1", "u1")))
@@ -115,7 +118,7 @@ async def test_topic_failure_keeps_submission_and_warns_author(monkeypatch, fail
 
     assert trace[0] == "commit"  # пост уже в БД
     assert "rollback" in trace
-    assert message.answer.await_args_list[-1].args[0] == msg.SUBMISSION_SEND_ERROR
+    assert message.answer.await_args_list[-1].args[0] == msg.SUBMISSION_ACCEPTED.format(sub_id=11)
 
 
 async def test_title_sync_failure_does_not_warn_author(monkeypatch) -> None:
@@ -132,7 +135,48 @@ async def test_title_sync_failure_does_not_warn_author(monkeypatch) -> None:
     assert trace.index("post_submission_card") < trace.index("rollback")
     assert trace[trace.index("post_submission_card") + 1] == "commit"
     sent = [call.args[0] for call in message.answer.await_args_list]
-    assert msg.SUBMISSION_SEND_ERROR not in sent
+    assert sent == [msg.SUBMISSION_ACCEPTED.format(sub_id=12)]
+
+
+def _make_topic_exception(exception_type):
+    if exception_type is TelegramRetryAfter:
+        return exception_type(method=MagicMock(), message="flood", retry_after=1)
+    return exception_type(method="sendMessage", message="connection reset")
+
+
+@pytest.mark.parametrize("exception_type", _TRANSIENT_ERRORS)
+async def test_transient_topic_failure_logs_warning_without_traceback(
+    monkeypatch, caplog, exception_type
+) -> None:
+    trace: list[str] = []
+    session = _make_session(trace)
+    message = make_message(photo=make_photo_sizes(("f1", "u1")))
+    db_user = make_user()
+    mocks = _patch_intake(monkeypatch, trace, make_submission(sub_id=16, user=db_user))
+    mocks["ensure_user_topic"].side_effect = _make_topic_exception(exception_type)
+
+    with caplog.at_level(logging.WARNING, logger=submission_intake.logger.name):
+        await submission_intake.submit_single_media(message, session, db_user)
+
+    records = [record for record in caplog.records if record.name == submission_intake.logger.name]
+    assert records[-1].levelno == logging.WARNING
+    assert records[-1].exc_info is None
+
+
+async def test_non_transient_topic_failure_logs_error_with_traceback(monkeypatch, caplog) -> None:
+    trace: list[str] = []
+    session = _make_session(trace)
+    message = make_message(photo=make_photo_sizes(("f1", "u1")))
+    db_user = make_user()
+    mocks = _patch_intake(monkeypatch, trace, make_submission(sub_id=17, user=db_user))
+    mocks["ensure_user_topic"].side_effect = RuntimeError("unexpected failure")
+
+    with caplog.at_level(logging.WARNING, logger=submission_intake.logger.name):
+        await submission_intake.submit_single_media(message, session, db_user)
+
+    records = [record for record in caplog.records if record.name == submission_intake.logger.name]
+    assert records[-1].levelno == logging.ERROR
+    assert records[-1].exc_info
 
 
 async def test_answer_failure_does_not_block_topic_card(monkeypatch) -> None:
@@ -178,7 +222,7 @@ async def test_card_commit_failure_deletes_delivered_block(monkeypatch) -> None:
 
     cleanup.assert_awaited_once_with(message.bot, [21, 22, 23], 15)
     assert "rollback" in trace
-    assert message.answer.await_args_list[-1].args[0] == msg.SUBMISSION_SEND_ERROR
+    assert message.answer.await_args_list[-1].args[0] == msg.SUBMISSION_ACCEPTED.format(sub_id=15)
 
 
 # ── медиа-группа идёт по тому же пути ─────────────────────────────
@@ -207,4 +251,4 @@ async def test_finalize_media_group_uses_the_same_durable_path(monkeypatch) -> N
 
     assert trace[0] == "commit"
     assert "rollback" in trace
-    assert first.answer.await_args_list[-1].args[0] == msg.SUBMISSION_SEND_ERROR
+    assert first.answer.await_args_list[-1].args[0] == msg.SUBMISSION_ACCEPTED.format(sub_id=14)

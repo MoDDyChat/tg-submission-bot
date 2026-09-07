@@ -96,7 +96,7 @@ Handlers don't raise domain exceptions — they handle situations inline and res
 - **Bot restart:** all scheduled jobs are restored from publications; FSM state is lost with MemoryStorage (preserved with RedisStorage — `REDIS_URL`); "Close" works correctly via `callback.message.delete()`
 - **Graceful shutdown:** the bot waits for in-flight media groups to finish (up to 30 sec) and calls `scheduler.shutdown(wait=True)`
 - **Moderator forum topic errors:**
-  - `topics.post_submission_card` — propagates the exception to the caller; the viewer sees an error message; card IDs (`topic_card_message_id`, `topic_media_message_ids`) are written only after a successful send
+  - `topics.post_submission_card` — propagates the exception to the caller; the already accepted post remains committed without a `topic_card_message_id` and is recovered by the periodic or manual card-recovery flow; no additional viewer error message is sent. Card IDs (`topic_card_message_id`, `topic_media_message_ids`) are written only after a successful send
   - `topics.update_submission_card` / `topics.finalize_submission_card` — best-effort operations; log a warning; don't break the main flow
   - `topics.delete_submission_card` clears `topic_card_message_id` / `topic_media_message_ids` only if all messages were actually deleted; on partial failure the IDs are kept for retry and diagnostics
 - **Transactions:** DbSessionMiddleware auto-rolls back on `BaseException` (including `CancelledError`)

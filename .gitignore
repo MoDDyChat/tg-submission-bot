@@ -29,3 +29,8 @@ docker-compose.override.yml
 config/*_rules.txt
 config/rules.txt
 .mypy_cache/
+
+# Стенд и конфиг ai-pipeline — локальная обвязка, не для публичного репозитория
+.ai-pipeline.toml
+docker-compose.test.yml
+scripts/testenv/

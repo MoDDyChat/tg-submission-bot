@@ -177,11 +177,12 @@ def _register_scheduled_jobs(bot: Bot, throttle: ThrottleMiddleware) -> None:
     _sched_mod.scheduler.add_job(
         queue_render_job,
         "interval",
-        minutes=5,
+        seconds=60,
         id="queue_render",
         replace_existing=True,
         misfire_grace_time=3600,
         coalesce=True,
+        max_instances=1,
         args=[bot, session_factory],
     )
     _sched_mod.scheduler.add_job(
@@ -208,7 +209,7 @@ def _register_scheduled_jobs(bot: Bot, throttle: ThrottleMiddleware) -> None:
     _sched_mod.scheduler.add_job(
         topic_cards_recover_job,
         "interval",
-        minutes=5,
+        minutes=1,
         id="topic_cards_recover",
         replace_existing=True,
         misfire_grace_time=3600,

@@ -61,13 +61,13 @@ async def get_active_submissions(session: AsyncSession) -> list[Submission]:
 
 
 async def list_active_submissions_without_card(
-    session: AsyncSession, min_age: timedelta = timedelta(minutes=10)
+    session: AsyncSession, min_age: timedelta = timedelta(minutes=2)
 ) -> list[Submission]:
     """Активные посты старше min_age, у которых карточка в теме так и не появилась.
 
     Без LIMIT: фиксированный head-лимит навсегда прятал бы хронически падающий
-    пост. ``min_age`` отсекает посты, ещё не прошедшие этап карточки, — job не
-    гонится с intake.
+    пост. Основная защита от гонки с intake — in-flight guard; ``min_age`` остаётся
+    вторым рубежом на случай, когда intake оборвался вместе с процессом.
     """
     terminal = ("published", "rejected", "cancelled")
     stmt = (

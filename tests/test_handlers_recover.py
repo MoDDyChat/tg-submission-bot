@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 
 from handlers.moderator import recover
 from tests.helpers import FakeSessionFactory, make_bot, make_media, make_submission
@@ -134,6 +135,7 @@ async def test_recover_posts_when_no_card_id(monkeypatch) -> None:
 
     repost = AsyncMock()
     monkeypatch.setattr(recover, "get_active_submissions", AsyncMock(return_value=[sub]))
+    monkeypatch.setattr(recover, "get_submission_with_user", AsyncMock(return_value=sub))
     monkeypatch.setattr(recover, "_repost_card", repost)
     monkeypatch.setattr(recover.asyncio, "sleep", AsyncMock())
 
@@ -182,6 +184,7 @@ async def test_recover_sends_no_admin_audit(monkeypatch) -> None:
 
     notify = AsyncMock()
     monkeypatch.setattr(recover, "get_active_submissions", AsyncMock(return_value=[sub]))
+    monkeypatch.setattr(recover, "get_submission_with_user", AsyncMock(return_value=sub))
     monkeypatch.setattr(recover, "_repost_card", AsyncMock())
     monkeypatch.setattr(recover.asyncio, "sleep", AsyncMock())
     monkeypatch.setattr(
@@ -197,6 +200,26 @@ async def test_recover_sends_no_admin_audit(monkeypatch) -> None:
     assert recovered == 1
     notify.assert_not_awaited()
     bot.send_message.assert_not_awaited()
+
+
+async def test_recover_skips_cardless_post_during_intake(monkeypatch) -> None:
+    bot = make_bot()
+    sub = make_submission(sub_id=7)
+    sub.topic_card_message_id = None
+
+    repost = AsyncMock()
+    monkeypatch.setattr(recover, "get_active_submissions", AsyncMock(return_value=[sub]))
+    monkeypatch.setattr(recover, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(recover, "is_intake_in_flight", lambda sub_id: sub_id == sub.id)
+    monkeypatch.setattr(recover, "_repost_card", repost)
+    monkeypatch.setattr(recover.asyncio, "sleep", AsyncMock())
+
+    factory = FakeSessionFactory(AsyncMock())
+    total, recovered = await recover.recover_missing_posts(bot, factory)
+
+    assert total == 1
+    assert recovered == 0
+    repost.assert_not_awaited()
 
 
 # ── recover_cardless_posts ───────────────────────────────────────────
@@ -253,6 +276,76 @@ async def test_recover_cardless_continues_after_failures(monkeypatch) -> None:
     assert repost.await_args_list[-1].args[2] is subs[-1]
 
 
+async def test_recover_cardless_stops_batch_on_flood_control(monkeypatch) -> None:
+    """Flood control stops the pass instead of retrying the next post."""
+    bot = make_bot()
+    subs = [make_submission(sub_id=1), make_submission(sub_id=2)]
+
+    repost = AsyncMock(
+        side_effect=TelegramRetryAfter(method=MagicMock(), message="flood", retry_after=120)
+    )
+    _patch_recheck(monkeypatch, subs)
+    monkeypatch.setattr(
+        recover, "list_active_submissions_without_card", AsyncMock(return_value=subs)
+    )
+    monkeypatch.setattr(recover, "_repost_card", repost)
+    monkeypatch.setattr(recover.asyncio, "sleep", AsyncMock())
+
+    factory = FakeSessionFactory(AsyncMock())
+    recovered = await recover.recover_cardless_posts(bot, factory)
+
+    assert recovered == 0
+    repost.assert_awaited_once()
+    assert repost.await_args.args[2] is subs[0]
+
+
+async def test_recover_cardless_does_not_sleep_on_flood_control(monkeypatch) -> None:
+    """A flood-controlled pass returns immediately for the next scheduled tick."""
+    bot = make_bot()
+    sub = make_submission(sub_id=11)
+
+    repost = AsyncMock(
+        side_effect=TelegramRetryAfter(method=MagicMock(), message="flood", retry_after=120)
+    )
+    _patch_recheck(monkeypatch, [sub])
+    monkeypatch.setattr(
+        recover, "list_active_submissions_without_card", AsyncMock(return_value=[sub])
+    )
+    monkeypatch.setattr(recover, "_repost_card", repost)
+    sleep = AsyncMock()
+    monkeypatch.setattr(recover.asyncio, "sleep", sleep)
+
+    factory = FakeSessionFactory(AsyncMock())
+    await recover.recover_cardless_posts(bot, factory)
+
+    sleep.assert_not_awaited()
+
+
+async def test_recover_cardless_logs_flood_control_warning(monkeypatch, caplog) -> None:
+    bot = make_bot()
+    sub = make_submission(sub_id=12)
+
+    repost = AsyncMock(
+        side_effect=TelegramRetryAfter(method=MagicMock(), message="flood", retry_after=120)
+    )
+    _patch_recheck(monkeypatch, [sub])
+    monkeypatch.setattr(
+        recover, "list_active_submissions_without_card", AsyncMock(return_value=[sub])
+    )
+    monkeypatch.setattr(recover, "_repost_card", repost)
+
+    factory = FakeSessionFactory(AsyncMock())
+    with caplog.at_level("WARNING"):
+        await recover.recover_cardless_posts(bot, factory)
+
+    assert any(
+        record.levelname == "WARNING"
+        and f"#{sub.id}" in record.message
+        and "retry_after=120с" in record.message
+        for record in caplog.records
+    )
+
+
 async def test_recover_cardless_no_posts_is_silent(monkeypatch, caplog) -> None:
     bot = make_bot()
 
@@ -270,6 +363,80 @@ async def test_recover_cardless_no_posts_is_silent(monkeypatch, caplog) -> None:
     repost.assert_not_awaited()
     bot.send_message.assert_not_awaited()
     assert not [r for r in caplog.records if r.levelname == "INFO"]
+
+
+async def test_recover_cardless_warns_once_for_stuck_posts(monkeypatch, caplog) -> None:
+    bot = make_bot()
+    stuck = make_submission(sub_id=13)
+    stuck.created_at = datetime.now(timezone.utc) - timedelta(minutes=31)
+    fresh = make_submission(sub_id=14)
+    fresh.created_at = datetime.now(timezone.utc) - timedelta(minutes=29)
+    subs = [stuck, fresh]
+
+    _patch_recheck(monkeypatch, subs)
+    monkeypatch.setattr(
+        recover, "list_active_submissions_without_card", AsyncMock(return_value=subs)
+    )
+    monkeypatch.setattr(recover, "_repost_card", AsyncMock())
+    monkeypatch.setattr(recover.asyncio, "sleep", AsyncMock())
+
+    factory = FakeSessionFactory(AsyncMock())
+    with caplog.at_level("WARNING"):
+        await recover.recover_cardless_posts(bot, factory)
+
+    warnings = [
+        record for record in caplog.records
+        if record.levelname == "WARNING" and "stuck_cardless_posts" in record.message
+    ]
+    assert len(warnings) == 1
+    assert "count=1" in warnings[0].message
+    assert str(stuck.id) in warnings[0].message
+
+
+async def test_recover_cardless_does_not_warn_for_fresh_posts(monkeypatch, caplog) -> None:
+    bot = make_bot()
+    sub = make_submission(sub_id=15)
+    sub.created_at = datetime.now(timezone.utc) - timedelta(minutes=29)
+
+    _patch_recheck(monkeypatch, [sub])
+    monkeypatch.setattr(
+        recover, "list_active_submissions_without_card", AsyncMock(return_value=[sub])
+    )
+    monkeypatch.setattr(recover, "_repost_card", AsyncMock())
+    monkeypatch.setattr(recover.asyncio, "sleep", AsyncMock())
+
+    factory = FakeSessionFactory(AsyncMock())
+    with caplog.at_level("WARNING"):
+        await recover.recover_cardless_posts(bot, factory)
+
+    assert not [
+        record for record in caplog.records if "stuck_cardless_posts" in record.message
+    ]
+
+
+async def test_recover_cardless_warns_when_stuck_repost_fails(monkeypatch, caplog) -> None:
+    bot = make_bot()
+    sub = make_submission(sub_id=16)
+    sub.created_at = datetime.now(timezone.utc) - timedelta(minutes=31)
+
+    _patch_recheck(monkeypatch, [sub])
+    monkeypatch.setattr(
+        recover, "list_active_submissions_without_card", AsyncMock(return_value=[sub])
+    )
+    monkeypatch.setattr(
+        recover, "_repost_card", AsyncMock(side_effect=RuntimeError("still unavailable"))
+    )
+
+    factory = FakeSessionFactory(AsyncMock())
+    with caplog.at_level("WARNING"):
+        await recover.recover_cardless_posts(bot, factory)
+
+    assert any(
+        record.levelname == "WARNING"
+        and "stuck_cardless_posts" in record.message
+        and str(sub.id) in record.message
+        for record in caplog.records
+    )
 
 
 async def test_recover_cardless_skips_post_that_got_a_card_meanwhile(monkeypatch) -> None:

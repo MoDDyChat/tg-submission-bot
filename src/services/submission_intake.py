@@ -3,6 +3,7 @@
 import asyncio
 import time
 
+from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import Message, MessageEntity
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,16 +28,25 @@ from services.tag_parsing import (
     serialize_suggested,
     strip_hashtag_lines,
 )
-from services.topics_queue import render_queue as _render_queue
+from services.topics_queue import request_queue_render
 from utils.html_entities import get_html_caption, get_html_text
 from utils.media import extract_media_info
 from utils.tags import MAX_TEXT_CAPTION, compose_caption, strip_html_for_length, validate_caption_length
+
+# Kept as a compatibility seam for existing intake tests; new code uses the
+# synchronous dirty-marker above so it never performs queue IO inline.
+_render_queue = request_queue_render
 
 logger = get_logger(__name__)
 
 _media_group_buffers: dict[str, list[Message]] = {}
 _media_group_locks: dict[str, asyncio.Lock] = {}
 _media_group_timestamps: dict[str, float] = {}
+# Посты, чей intake прямо сейчас идёт: recover обязан их пропускать, иначе
+# выложит второй экземпляр медиа и карточки поверх ещё не завершённого приёма.
+# Процессное состояние: после рестарта множество пусто — и задача intake тоже
+# мертва, пропускать нечего.
+_intake_in_flight: set[int] = set()
 
 _MEDIA_GROUP_WAIT = 2.0
 _BUFFER_TTL = 300
@@ -47,6 +57,16 @@ def reset_media_group_buffers() -> None:
     _media_group_buffers.clear()
     _media_group_locks.clear()
     _media_group_timestamps.clear()
+
+
+def is_intake_in_flight(sub_id: int) -> bool:
+    """Идёт ли прямо сейчас размещение карточки этого поста в теме."""
+    return sub_id in _intake_in_flight
+
+
+def reset_intake_in_flight() -> None:
+    """Сбросить guard между тестами (module-level состояние переживает тест)."""
+    _intake_in_flight.clear()
 
 
 async def wait_for_pending_groups(timeout: float = 30.0) -> None:
@@ -112,22 +132,35 @@ async def _publish_submission_to_topic(
         logger.error("Пост #%d не найден сразу после создания", sub_id)
         return
 
+    _intake_in_flight.add(sub_id)
     try:
-        await topics.ensure_user_topic(message.bot, session, sub_full.user)
-        await session.commit()
-        media_ids, card_id = await topics.post_submission_card(message.bot, session, sub_full)
-        # Общий хелпер: коммитит ID, а при сбое откатывает и снимает уже
-        # доставленный блок, иначе topic_cards_recover продублировал бы его.
-        await topics.commit_or_delete_delivered(
-            session, message.bot, [*media_ids, card_id], sub_id
-        )
-    except Exception:
-        await session.rollback()
-        logger.error("Не удалось отправить пост #%d в тему форума", sub_id, exc_info=True)
-        await _try_answer(message, msg.SUBMISSION_SEND_ERROR)
-        # Пост остаётся в БД без topic_card_message_id — карточку восстановит
-        # джоба topic_cards_recover или ручной Recover.
-        return
+        try:
+            await topics.ensure_user_topic(message.bot, session, sub_full.user)
+            await session.commit()
+            media_ids, card_id = await topics.post_submission_card(
+                message.bot, session, sub_full
+            )
+            # Общий хелпер: коммитит ID, а при сбое откатывает и снимает уже
+            # доставленный блок, иначе topic_cards_recover продублировал бы его.
+            await topics.commit_or_delete_delivered(
+                session, message.bot, [*media_ids, card_id], sub_id
+            )
+        except (TelegramRetryAfter, TelegramNetworkError):
+            await session.rollback()
+            logger.warning("Не удалось отправить пост #%d в тему форума", sub_id)
+            # Пост остаётся в БД без topic_card_message_id — карточку восстановит
+            # джоба topic_cards_recover или ручной Recover. Автору намеренно ничего
+            # дополнительно не отправляем: подтверждение о приёме уже было отправлено.
+            return
+        except Exception:
+            await session.rollback()
+            logger.error("Не удалось отправить пост #%d в тему форума", sub_id, exc_info=True)
+            # Пост остаётся в БД без topic_card_message_id — карточку восстановит
+            # джоба topic_cards_recover или ручной Recover. Автору намеренно ничего
+            # дополнительно не отправляем: подтверждение о приёме уже было отправлено.
+            return
+    finally:
+        _intake_in_flight.discard(sub_id)
 
     try:
         await topics.request_topic_title_sync(session, user_id)
@@ -140,11 +173,7 @@ async def _publish_submission_to_topic(
             user_id, exc_info=True,
         )
 
-    try:
-        await _render_queue(message.bot, session)
-    except Exception:
-        logger.warning("Не удалось перерисовать очередь после поста #%d", sub_id, exc_info=True)
-        await session.rollback()
+    request_queue_render()
     request_dashboard()
     request_author_card(user_id)
 

@@ -172,24 +172,32 @@ async def test_recover_scheduled_jobs_marks_overdue_dead_and_notifies_once(monke
     notify_admins_mock.assert_not_awaited()
 
 
-async def test_queue_render_job_calls_render_queue_with_force_reconcile(monkeypatch) -> None:
-    render_queue_mock = AsyncMock()
+async def test_queue_render_job_coalesces_schedule_render_but_ticks_queue(monkeypatch) -> None:
+    render_queue_tick_mock = AsyncMock()
     render_schedule_mock = AsyncMock()
 
-    # queue_render_job does `from services.topics_queue import render_queue, render_schedule` at runtime
+    # queue_render_job imports the render functions at runtime.
     import services.topics_queue as topics_queue_mod
-    monkeypatch.setattr(topics_queue_mod, "render_queue", render_queue_mock)
+    monkeypatch.setattr(topics_queue_mod, "render_queue_tick", render_queue_tick_mock)
     monkeypatch.setattr(topics_queue_mod, "render_schedule", render_schedule_mock)
+    monkeypatch.setattr(scheduler, "_last_render_at", 0.0)
+    loop = Mock()
+    loop.time.side_effect = [300.0, 301.0, 301.0]
+    monkeypatch.setattr(scheduler.asyncio, "get_running_loop", Mock(return_value=loop))
 
     session = AsyncMock()
     factory = FakeSessionFactory(session)
     bot = make_bot()
 
     await scheduler.queue_render_job(bot, factory)
+    await scheduler.queue_render_job(bot, factory)
 
-    render_queue_mock.assert_awaited_once_with(bot, session, force_reconcile=True)
+    render_queue_tick_mock.assert_has_awaits([
+        ((bot, session), {}),
+        ((bot, session), {}),
+    ])
     render_schedule_mock.assert_awaited_once_with(bot, session, force_reconcile=True)
-    session.commit.assert_awaited_once()
+    assert session.commit.await_count == 2
 
 
 async def test_topic_titles_reconcile_job_queues_drift(monkeypatch) -> None:
@@ -249,10 +257,10 @@ def test_register_scheduled_jobs_includes_author_card_and_dashboard_jobs(mock_sc
     }
 
     expected = {
+        "queue_render": {"seconds": 60},
         "author_card_render": {"seconds": 60},
         "author_card_reconcile": {"minutes": 10},
         "dashboard_render": {"seconds": 60},
-        "topic_cards_recover": {"minutes": 5},
     }
     for job_id, interval_kwargs in expected.items():
         assert job_id in calls_by_id, f"job {job_id} was not registered"
@@ -263,6 +271,9 @@ def test_register_scheduled_jobs_includes_author_card_and_dashboard_jobs(mock_sc
         assert call.kwargs["max_instances"] == 1
         assert call.kwargs["replace_existing"] is True
         assert call.kwargs["coalesce"] is True
+
+    recover_call = calls_by_id["topic_cards_recover"]
+    assert recover_call.kwargs["max_instances"] == 1
 
 
 async def test_topic_title_sync_job_processes_one_tick(monkeypatch) -> None:

@@ -42,6 +42,12 @@ logger = get_logger(__name__)
 
 _QUEUE_MAX_LINES_PER_CHUNK = 30
 _QUEUE_KEY_PREFIX = "general:queue:"
+_FORCE_RENDER_INTERVAL = 300  # forced self-heal, even if not dirty
+_dirty: bool = False
+# loop.time() — монотонные часы хоста, а не время с запуска процесса. При 0.0
+# первый тик на только что загруженной машине не был бы force-рендером, поэтому
+# стартовое значение сдвинуто на интервал назад: первый тик всегда с reconcile.
+_last_render_at: float = -_FORCE_RENDER_INTERVAL
 _render_lock = asyncio.Lock()
 
 _SCHEDULE_KEY = "general:schedule"
@@ -275,6 +281,31 @@ async def render_queue(
     try:
         async with _render_lock:
             await _render_queue_inner(bot, session, force_reconcile=force_reconcile)
+    except Exception:
+        logger.warning("Не удалось обновить очередь в General-теме", exc_info=True)
+
+
+def request_queue_render() -> None:
+    """Mark the queue board dirty. The render job picks it up on its next tick."""
+    global _dirty
+    _dirty = True
+
+
+async def render_queue_tick(bot: Bot, session: AsyncSession) -> None:
+    """Render the queue once when dirty, or when the self-heal interval expires."""
+    global _dirty, _last_render_at
+
+    try:
+        async with _render_lock:
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            force = now - _last_render_at >= _FORCE_RENDER_INTERVAL
+            if not _dirty and not force:
+                return
+
+            _dirty = False
+            await _render_queue_inner(bot, session, force_reconcile=force)
+            _last_render_at = loop.time()
     except Exception:
         logger.warning("Не удалось обновить очередь в General-теме", exc_info=True)
 

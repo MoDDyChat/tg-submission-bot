@@ -1,6 +1,7 @@
 """Moderator: recover — restore missing topic submission cards."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
@@ -16,6 +17,7 @@ from db.queries import (
     list_active_submissions_without_card,
 )
 from services import topics
+from services.submission_intake import is_intake_in_flight
 
 logger = get_logger(__name__)
 
@@ -23,6 +25,7 @@ router = Router()
 
 # Pause between Telegram API calls to stay under EditMessageText flood limits.
 _PROBE_DELAY = 0.5
+_STUCK_CARD_AGE = timedelta(minutes=30)
 
 # Manual Recover and the periodic cardless job share one guard: without it the
 # two could repost the same card twice. Lazily created — a lock binds to the
@@ -95,6 +98,11 @@ async def recover_missing_posts(
                     if fresh is None:
                         continue
                     target = fresh
+                else:
+                    fresh = await _still_cardless(session_factory, sub.id)
+                    if fresh is None:
+                        continue
+                    target = fresh
 
                 # Call phase: Telegram requests with no open DB transaction.
                 await _repost_card(bot, session_factory, target)
@@ -123,6 +131,20 @@ async def recover_cardless_posts(
         async with session_factory() as session:
             submissions = await list_active_submissions_without_card(session)
 
+        now = datetime.now(timezone.utc)
+        stuck_ids = [
+            sub.id
+            for sub in submissions
+            if sub.created_at is not None
+            and now - sub.created_at.astimezone(timezone.utc) > _STUCK_CARD_AGE
+        ]
+        if stuck_ids:
+            logger.warning(
+                "stuck_cardless_posts count=%d ids=%s",
+                len(stuck_ids),
+                stuck_ids[:10],
+            )
+
         recovered = 0
         for sub in submissions:
             try:
@@ -133,7 +155,12 @@ async def recover_cardless_posts(
                 recovered += 1
                 await asyncio.sleep(_PROBE_DELAY)
             except TelegramRetryAfter as e:
-                await asyncio.sleep(e.retry_after)
+                logger.warning(
+                    "Флуд-контроль при восстановлении карточки поста #%d, "
+                    "проход прерван, следующая попытка через тик (retry_after=%dс)",
+                    sub.id, e.retry_after,
+                )
+                break
             except Exception:
                 logger.exception("Ошибка при восстановлении карточки поста #%d", sub.id)
 
@@ -162,6 +189,9 @@ async def _still_cardless(
     async with session_factory() as session:
         fresh = await get_submission_with_user(session, sub_id)
     if fresh is None:
+        return None
+    if is_intake_in_flight(sub_id):
+        logger.info("Пост #%d: intake ещё идёт, восстановление пропускаем", sub_id)
         return None
     if fresh.topic_card_message_id is not None:
         logger.info("Пост #%d: карточка появилась до восстановления, пропускаем", sub_id)

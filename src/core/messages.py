@@ -81,7 +81,6 @@ _DEFAULTS: dict[str, str | dict[str, str]] = {
     'SUBMISSION_CANT_CANCEL': 'Пост уже нельзя отменить (статус: {status}).',
     'SUBMISSION_CANCELLED': '<b>Пост (#{sub_id})</b> отменён.',
     'PUBLISHED_NOTIFICATION': 'Твой <b>пост (#{sub_id})</b> опубликован в канале! Спасибо за твоё творчество!',
-    'SUBMISSION_SEND_ERROR': 'Пост принят, но произошла ошибка при отправке модератору. Обратись к Модди.',
     'UNSUPPORTED_MEDIA': 'Этот тип медиа не поддерживается. Отправьте фото, видео, GIF или документ.',
     'YOU_ARE_BANNED': 'Вы заблокированы и не можете отправлять посты.\n\n<b>Причина:</b> {reason}',
     'POST_NOT_FOUND_OR_CANCELLED': 'Пост не найден или был отменён автором.',

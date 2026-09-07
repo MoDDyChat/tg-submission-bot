@@ -1,5 +1,6 @@
 """APScheduler wrapper: scheduling, cancellation, and recovery on restart."""
 
+import asyncio
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -25,6 +26,8 @@ logger = get_logger(__name__)
 # Module-level reference set by core/bot.py via create_scheduler().
 # None until main() initialises it.
 scheduler: AsyncIOScheduler | None = None
+_FORCE_RENDER_INTERVAL = 300  # seconds between schedule-board self-heals
+_last_render_at: float = 0.0  # loop.time()
 
 
 def create_scheduler() -> AsyncIOScheduler:
@@ -238,12 +241,18 @@ async def queue_render_job(
     bot: Bot,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Periodic self-heal: refresh the queue board in the General topic."""
-    from services.topics_queue import render_queue, render_schedule
+    """Coalescing queue tick plus periodic schedule-board self-heal."""
+    global _last_render_at
+
+    from services.topics_queue import render_queue_tick, render_schedule
 
     async with session_factory() as session:
-        await render_queue(bot, session, force_reconcile=True)
-        await render_schedule(bot, session, force_reconcile=True)
+        await render_queue_tick(bot, session)
+
+        loop = asyncio.get_running_loop()
+        if loop.time() - _last_render_at >= _FORCE_RENDER_INTERVAL:
+            await render_schedule(bot, session, force_reconcile=True)
+            _last_render_at = loop.time()
         await session.commit()
 
 

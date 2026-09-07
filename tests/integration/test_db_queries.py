@@ -246,6 +246,7 @@ async def test_list_active_submissions_without_card_skips_young_intakes(db_sessi
     stale = await create_submission(db_session, user.id, "Завис без карточки")
     carded = await create_submission(db_session, user.id, "С карточкой")
     await db_session.flush()
+    fresh.created_at = datetime.now(timezone.utc) - timedelta(seconds=30)
     stale.created_at = datetime.now(timezone.utc) - timedelta(hours=1)
     carded.created_at = datetime.now(timezone.utc) - timedelta(hours=1)
     carded.topic_card_message_id = 777
