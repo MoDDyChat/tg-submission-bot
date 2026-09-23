@@ -37,6 +37,7 @@ from core.logging import get_logger
 from core.topic_status_config import build_topic_nav_legend
 from db.models import EditLock
 from db.queries import (
+    count_distinct_authors,
     count_recent_publications,
     count_submissions_by_status,
     get_system_message,
@@ -65,6 +66,17 @@ def request_dashboard() -> None:
     """Mark the dashboard dirty. No IO — the render job picks it up on its next tick."""
     global _dirty
     _dirty = True
+
+
+def _authors_label(count: int) -> str:
+    """``N авторов`` with the Russian plural form picked for *count*."""
+    if count % 10 == 1 and count % 100 != 11:
+        word = "автор"
+    elif 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        word = "автора"
+    else:
+        word = "авторов"
+    return f"{count} {word}"
 
 
 async def _build_locks_block(session: AsyncSession) -> str:
@@ -99,6 +111,8 @@ async def _build_dashboard_text(session: AsyncSession, legend: str = "") -> str:
     # per-status counts double as all-time totals.
     total_submitted = sum(status_counts.values())
     total_published = status_counts.get("published", 0)
+    submitted_authors = await count_distinct_authors(session)
+    published_authors = await count_distinct_authors(session, "published")
 
     since = datetime.now(timezone.utc) - timedelta(days=7)
     published_7d = await count_recent_publications(session, since)
@@ -112,6 +126,8 @@ async def _build_dashboard_text(session: AsyncSession, legend: str = "") -> str:
         published_7d=published_7d,
         total_submitted=total_submitted,
         total_published=total_published,
+        submitted_authors=_authors_label(submitted_authors),
+        published_authors=_authors_label(published_authors),
         locks_block=locks_block,
     )
     return f"{stats}\n\n{legend}" if legend else stats

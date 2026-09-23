@@ -10,6 +10,7 @@ from db.queries import (
     add_media,
     ban_user,
     clear_topic_card_ids_if_unchanged,
+    count_distinct_authors,
     create_message,
     create_publication,
     create_submission,
@@ -332,6 +333,22 @@ async def test_create_message_persists_conversation_entry(db_session) -> None:
     assert message.submission_id == submission.id
     assert message.sender_telegram_id == 666
     assert message.text == "Reply text"
+
+
+@pytest.mark.asyncio
+async def test_count_distinct_authors_overall_and_by_status(db_session) -> None:
+    prolific, _ = await get_or_create_user(db_session, 881, "prolific", "Prolific")
+    rejected_only, _ = await get_or_create_user(db_session, 882, "rejected", "Rejected")
+    for status in ("published", "published", "pending"):
+        submission = await create_submission(db_session, prolific.id, status)
+        if status != "pending":
+            await update_submission_status(db_session, submission.id, status)
+    submission = await create_submission(db_session, rejected_only.id, "rejected")
+    await update_submission_status(db_session, submission.id, "rejected")
+    await db_session.commit()
+
+    assert await count_distinct_authors(db_session) == 2
+    assert await count_distinct_authors(db_session, "published") == 1
 
 
 @pytest.mark.asyncio

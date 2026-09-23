@@ -3,7 +3,7 @@
 from collections.abc import Collection
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import distinct, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -158,6 +158,15 @@ async def count_submissions_by_status(session: AsyncSession) -> dict[str, int]:
     stmt = select(Submission.status, func.count()).group_by(Submission.status)
     result = await session.execute(stmt)
     return {status: count for status, count in result.all()}
+
+
+async def count_distinct_authors(session: AsyncSession, status: str | None = None) -> int:
+    """Count distinct authors of all submissions, or only of those in *status*."""
+    stmt = select(func.count(distinct(Submission.user_id)))
+    if status is not None:
+        stmt = stmt.where(Submission.status == status)
+    result = await session.execute(stmt)
+    return result.scalar_one()
 
 
 async def count_recent_rejections(session: AsyncSession, since: datetime) -> int:

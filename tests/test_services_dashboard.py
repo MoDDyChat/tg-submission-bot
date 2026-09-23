@@ -64,6 +64,7 @@ def _patch_counters(
     status_counts: dict | None = None,
     dead: list | None = None,
     published_7d: int = 0,
+    authors: tuple[int, int] = (0, 0),
     user=None,
 ) -> None:
     monkeypatch.setattr(
@@ -72,6 +73,9 @@ def _patch_counters(
     monkeypatch.setattr(dashboard, "list_dead_publications", AsyncMock(return_value=dead or []))
     monkeypatch.setattr(
         dashboard, "count_recent_publications", AsyncMock(return_value=published_7d)
+    )
+    monkeypatch.setattr(
+        dashboard, "count_distinct_authors", AsyncMock(side_effect=list(authors))
     )
     monkeypatch.setattr(dashboard, "get_user_by_id", AsyncMock(return_value=user))
 
@@ -92,17 +96,38 @@ async def test_dashboard_text_has_correct_counters_and_empty_locks(monkeypatch) 
         status_counts={"pending": 3, "scheduled": 6, "published": 9, "rejected": 2},
         dead=[MagicMock(), MagicMock()],
         published_7d=7,
+        authors=(5, 3),
     )
 
     text = await dashboard._build_dashboard_text(session)
 
     assert "<b>3</b>" in text  # pending
     assert "<b>4</b>" in text  # scheduled = 6 - 2 dead
-    assert "<b>2</b>" in text  # dead
+    assert "С ошибкой: <b>2</b>" in text  # dead
     assert "7" in text  # published_7d
-    assert "<b>20</b>" in text  # total submitted = 3 + 6 + 9 + 2
-    assert "<b>9</b>" in text  # total published
+    assert "<b>20</b> (5 авторов)" in text  # total submitted = 3 + 6 + 9 + 2
+    assert "<b>9</b> (3 автора)" in text  # total published
     assert "Сейчас никто ничего не редактирует" in text
+
+
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [
+        (0, "0 авторов"),
+        (1, "1 автор"),
+        (2, "2 автора"),
+        (4, "4 автора"),
+        (5, "5 авторов"),
+        (11, "11 авторов"),
+        (12, "12 авторов"),
+        (21, "21 автор"),
+        (22, "22 автора"),
+        (111, "111 авторов"),
+        (114, "114 авторов"),
+    ],
+)
+def test_authors_label_picks_russian_plural(count: int, expected: str) -> None:
+    assert dashboard._authors_label(count) == expected
 
 
 async def test_dashboard_text_includes_locks_block(monkeypatch) -> None:

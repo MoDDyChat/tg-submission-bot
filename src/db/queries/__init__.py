@@ -27,6 +27,7 @@ from db.queries.submission_media import (
     get_submission_media,
 )
 from db.queries.submissions import (
+    count_distinct_authors,
     count_recent_rejections,
     count_submissions_by_status,
     create_submission,
@@ -117,6 +118,7 @@ __all__ = [
     "delete_media_unless_last",
     "get_submission_media",
     # submissions
+    "count_distinct_authors",
     "count_recent_rejections",
     "count_submissions_by_status",
     "create_submission",

@@ -308,7 +308,7 @@ _DEFAULTS: dict[str, str | dict[str, str]] = {
     'USER_LOOKUP_AMBIGUOUS': 'Найдено несколько пользователей с таким ником — Telegram позволяет менять username, и старая запись могла остаться в базе. Укажи числовой Telegram ID (<code>/user &lt;telegram_id&gt;</code>).',
     'USER_LOOKUP_NO_TOPIC': 'У автора ещё нет темы в группе (не присылал заявок).',
     # ── Dashboard ─────────────────────────────────────────────────────
-    'DASHBOARD_TEXT': '📊 <b>Сводка предложки</b>\n\n📥 Всего предложено: <b>{total_submitted}</b>\n📤 Всего опубликовано: <b>{total_published}</b>\n\n🕓 В очереди: <b>{pending}</b>\n🗓 Запланировано: <b>{scheduled}</b>\n⛔️ Мертво: <b>{dead}</b>\n✅ Опубликовано за 7 дней: {published_7d}\n\n{locks_block}',
+    'DASHBOARD_TEXT': '📊 <b>Сводка предложки</b>\n\n📥 Всего предложено: <b>{total_submitted}</b> ({submitted_authors})\n📤 Всего опубликовано: <b>{total_published}</b> ({published_authors})\n\n🕓 В очереди: <b>{pending}</b>\n🗓 Запланировано: <b>{scheduled}</b>\n⛔️ С ошибкой: <b>{dead}</b>\n✅ Опубликовано за 7 дней: {published_7d}\n\n{locks_block}',
     'DASHBOARD_LOCKS_HEADER': '✏️ <b>Сейчас в работе:</b>',
     'DASHBOARD_LOCK_SUBMISSION': '• {mod} → пост #{sub_id}',
     'DASHBOARD_LOCK_MANAGEMENT': '• {mod} → раздел «{section}»',
