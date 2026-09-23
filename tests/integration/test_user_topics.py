@@ -4,9 +4,12 @@ Requires TEST_DATABASE_URL pointing at a real PostgreSQL database.
 """
 from __future__ import annotations
 
-import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+import asyncio
 
+import pytest
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+
+import services.topics as topics_service
 from db.queries.topics import (
     delete_user_topic,
     enqueue_topic_title_sync,
@@ -139,6 +142,55 @@ async def test_reconcile_does_not_duplicate_existing_pending_revision(
     topic = await get_user_topic(db_session, user_id)
     assert topic is not None
     assert topic.title_sync_version == 1
+
+
+async def test_claim_sees_revision_committed_between_passes(
+    db_session: AsyncSession,
+    integration_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Регрессия 2026-09-23: ревизия, закоммиченная конкурентом после того, как
+    claim прочитал строку, раньше оставалась невидимой из-за identity map —
+    mark() превращался в no-op, и claim крутился вечно с открытой транзакцией.
+    """
+    user_id = await _make_user(db_session, telegram_id=1009)
+    await upsert_user_topic(
+        db_session, user_id, topic_id=90, status_key="pending"
+    )
+    await enqueue_topic_title_sync(db_session, user_id)
+    await db_session.commit()
+
+    session_factory = async_sessionmaker(
+        integration_engine, expire_on_commit=False
+    )
+    calls = 0
+
+    async def status_with_concurrent_enqueue(
+        session: AsyncSession, uid: int
+    ) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            async with session_factory() as other:
+                await enqueue_topic_title_sync(other, uid)
+                await other.commit()
+        return "pending"
+
+    monkeypatch.setattr(
+        topics_service, "compute_topic_status_key", status_with_concurrent_enqueue
+    )
+
+    claimed = await asyncio.wait_for(
+        topics_service._claim_next_title_revision(session_factory), timeout=10
+    )
+
+    assert claimed is None
+    assert calls == 2
+    db_session.expire_all()
+    topic = await get_user_topic(db_session, user_id)
+    assert topic is not None
+    assert topic.title_sync_version == 2
+    assert topic.title_applied_version == 2
 
 
 # ── delete ────────────────────────────────────────────────────────────

@@ -401,6 +401,10 @@ async def _claim_next_title_revision(
                 )
                 .order_by(UserTopic.updated_at, UserTopic.user_id)
                 .limit(1)
+                # Строка уже в identity map с прошлого прохода: без перечитывания
+                # версия, закоммиченная конкурентом между проходами, не видна,
+                # mark() становится no-op и цикл крутится вечно, держа лок строки.
+                .execution_options(populate_existing=True)
             )
             row = result.first()
             if row is None:
