@@ -186,9 +186,27 @@ def test_strip_hashtag_lines_keeps_tags_only_caption_unchanged() -> None:
     assert strip_hashtag_lines("#One\n\n#Two") == "#One\n\n#Two"
 
 
-def test_strip_hashtag_lines_keeps_lines_with_markup() -> None:
-    assert strip_hashtag_lines("<b>#One</b>\nОписание") == "<b>#One</b>\nОписание"
-    assert strip_hashtag_lines("#One <b>#Two</b>\nОписание") == "#One <b>#Two</b>\nОписание"
+def test_strip_hashtag_lines_removes_tag_line_with_markup_closed_on_it() -> None:
+    assert strip_hashtag_lines("<b>#One</b>\nОписание") == "Описание"
+    assert strip_hashtag_lines("#One <b>#Two</b>\nОписание") == "Описание"
+    # Пост #450: автор выделил последний тег жирным курсивом.
+    assert strip_hashtag_lines(
+        "#Арт | #MoDDyChat | #PWGood | <b><i>#RHContest</i></b>\n\nПримите котика."
+    ) == "Примите котика."
+    assert strip_hashtag_lines("Описание\n\n<i>#One</i> | #Two") == "Описание"
+
+
+def test_strip_hashtag_lines_keeps_lines_with_markup_spanning_lines() -> None:
+    assert strip_hashtag_lines("<b>#One\nОписание</b>") == "<b>#One\nОписание</b>"
+    assert strip_hashtag_lines("<b>Заголовок\n#One</b>\nТекст") == "<b>Заголовок\n#One</b>\nТекст"
+    assert strip_hashtag_lines("<b>#One</i>\nОписание") == "<b>#One</i>\nОписание"
+
+
+def test_strip_hashtag_lines_keeps_markup_line_that_is_not_only_tags() -> None:
+    assert strip_hashtag_lines('<a href="https://x.y/#a">ссылка</a>\nОписание') == (
+        '<a href="https://x.y/#a">ссылка</a>\nОписание'
+    )
+    assert strip_hashtag_lines("<b>Крутая #работа</b>\nОписание") == "<b>Крутая #работа</b>\nОписание"
 
 
 def test_strip_hashtag_lines_keeps_tag_block_deep_in_the_text() -> None:

@@ -22,6 +22,7 @@ FUZZY_THRESHOLD = 0.8
 _BARE_HASHTAG_LINE_RE = re.compile(
     rf"\s*#\S+(\s*[{re.escape(TAG_GROUP_SEPARATORS)}]?\s*#\S+)*\s*"
 )
+_HTML_TAG_RE = re.compile(r"<(/?)([a-zA-Z][\w-]*)[^>]*>")
 
 # Сколько строк текста может стоять над строкой тегов, чтобы она всё ещё
 # считалась «шапкой» поста, а не хэштегами внутри рассказа.
@@ -112,8 +113,27 @@ def match_suggested_tags(raw_tags: list[str], presets: list[tuple[str, str]]) ->
     return results
 
 
+def _strip_balanced_markup(line: str) -> str | None:
+    """Снять HTML-разметку, если вся она открывается и закрывается в этой строке.
+
+    ``None`` — разметка уходит за пределы строки: удалить такую строку целиком
+    значит оставить непарный тег, и Telegram не примет подпись.
+    """
+    stack: list[str] = []
+    for match in _HTML_TAG_RE.finditer(line):
+        closing, name = match.group(1), match.group(2).lower()
+        if not closing:
+            stack.append(name)
+        elif not stack or stack.pop() != name:
+            return None
+    if stack:
+        return None
+    return _HTML_TAG_RE.sub("", line)
+
+
 def _is_bare_tag_line(line: str) -> bool:
-    return "<" not in line and _BARE_HASHTAG_LINE_RE.fullmatch(line) is not None
+    text = _strip_balanced_markup(line)
+    return text is not None and "<" not in text and _BARE_HASHTAG_LINE_RE.fullmatch(text) is not None
 
 
 def _strip_head_tag_block(lines: list[str]) -> list[str]:

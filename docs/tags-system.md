@@ -102,6 +102,8 @@ Which blocks are trimmed:
 - the leading and the trailing block, as before;
 - a block sitting right under a short heading — at most `_HEAD_TEXT_LINES_BEFORE_TAGS` (2) lines of text above it. Authors often write a title, then their tag line, then the text; that block is the same author's signature as a leading one.
 
+A tag line may carry formatting (`#One | <b><i>#Two</i></b>`) as long as every HTML tag opens and closes on that same line; markup that spans lines keeps the line, since dropping it would leave an unpaired tag that Telegram rejects.
+
 A hashtag line deeper in the text is left alone — there hashtags are usually part of a sentence rather than a signature. A caption made of hashtags only is never emptied.
 
 ### Matching rules
