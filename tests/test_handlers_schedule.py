@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from zoneinfo import ZoneInfo
 
 import core.messages as msg
@@ -47,7 +47,7 @@ async def test_schedule_confirm_calls_render_schedule(monkeypatch) -> None:
     monkeypatch.setattr(schedule.topic_notifications, "notify_rescheduled", AsyncMock())
     monkeypatch.setattr(schedule.topics, "update_submission_card", AsyncMock())
     monkeypatch.setattr(schedule.topics, "request_topic_title_sync", AsyncMock())
-    monkeypatch.setattr(schedule, "_render_queue", AsyncMock())
+    monkeypatch.setattr(schedule, "request_queue_render", Mock())
     mock_render_schedule = AsyncMock()
     monkeypatch.setattr(schedule, "_render_schedule", mock_render_schedule)
 
@@ -56,6 +56,50 @@ async def test_schedule_confirm_calls_render_schedule(monkeypatch) -> None:
     mock_transition.assert_awaited_once_with(session, sub.id, "scheduled", expected={"pending"})
     mock_render_schedule.assert_awaited_once_with(callback.bot, session)
     assert state.state == ModeratorReview.viewing_post
+
+
+async def test_schedule_confirm_answers_before_slow_telegram_calls(monkeypatch) -> None:
+    """The success alert goes out before the card edit, which may wait out flood control."""
+    session = AsyncMock()
+    user = make_user()
+    sub = make_submission(sub_id=6, status="pending", caption="Test", tags=["Art"])
+    pub = make_publication(pub_id=2, submission_id=6)
+    callback = make_callback()
+    state = FakeState({
+        "sub_id": 6,
+        "pub_year": 2027,
+        "pub_month": 1,
+        "pub_day": 15,
+        "pub_hour": 12,
+        "pub_minute": 0,
+        "actions_message_id": 10,
+        "media_message_ids": [],
+    })
+
+    async def card_edit(*args, **kwargs) -> None:
+        callback.answer.assert_awaited_once_with(
+            msg.SCHEDULED_OK.format(sub_id=6, time="15.01.2027 12:00"), show_alert=True,
+        )
+
+    monkeypatch.setattr(schedule, "get_submission_with_user", AsyncMock(return_value=sub))
+    monkeypatch.setattr(schedule.edit_lock, "extend_lock", AsyncMock(return_value=True))
+    monkeypatch.setattr(schedule, "get_publication_by_submission", AsyncMock(return_value=None))
+    monkeypatch.setattr(schedule, "transition_submission_status", AsyncMock(return_value=True))
+    monkeypatch.setattr(schedule, "create_publication", AsyncMock(return_value=pub))
+    monkeypatch.setattr(schedule, "schedule_post", Mock())
+    monkeypatch.setattr(schedule.topic_notifications, "notify_scheduled", AsyncMock())
+    update_card = AsyncMock(side_effect=card_edit)
+    monkeypatch.setattr(schedule.topics, "update_submission_card", update_card)
+    monkeypatch.setattr(schedule.topics, "request_topic_title_sync", AsyncMock())
+    request_render = Mock()
+    monkeypatch.setattr(schedule, "request_queue_render", request_render)
+    monkeypatch.setattr(schedule, "_render_schedule", AsyncMock())
+
+    await schedule.handle_confirm_yes(callback, session, state, user)
+
+    update_card.assert_awaited_once()
+    callback.answer.assert_awaited_once()
+    request_render.assert_called_once_with()
 
 
 async def _run_confirm_with_existing_pub(monkeypatch, pub) -> tuple[AsyncMock, AsyncMock]:
@@ -90,7 +134,7 @@ async def _run_confirm_with_existing_pub(monkeypatch, pub) -> tuple[AsyncMock, A
     monkeypatch.setattr(schedule.topic_notifications, "notify_rescheduled", notify_rescheduled)
     monkeypatch.setattr(schedule.topics, "update_submission_card", AsyncMock())
     monkeypatch.setattr(schedule.topics, "request_topic_title_sync", AsyncMock())
-    monkeypatch.setattr(schedule, "_render_queue", AsyncMock())
+    monkeypatch.setattr(schedule, "request_queue_render", Mock())
     monkeypatch.setattr(schedule, "_render_schedule", AsyncMock())
 
     await schedule.handle_confirm_yes(callback, session, state, user)
@@ -149,7 +193,7 @@ async def test_schedule_confirm_double_click_loser_creates_nothing(monkeypatch) 
     monkeypatch.setattr(schedule.topic_notifications, "notify_rescheduled", AsyncMock())
     monkeypatch.setattr(schedule.topics, "update_submission_card", AsyncMock())
     monkeypatch.setattr(schedule.topics, "request_topic_title_sync", AsyncMock())
-    monkeypatch.setattr(schedule, "_render_queue", AsyncMock())
+    monkeypatch.setattr(schedule, "request_queue_render", Mock())
     monkeypatch.setattr(schedule, "_render_schedule", AsyncMock())
 
     await schedule.handle_confirm_yes(callback, session, state, user)
@@ -191,7 +235,7 @@ async def test_schedule_confirm_reschedule_loser_spares_job(monkeypatch) -> None
     monkeypatch.setattr(schedule.topic_notifications, "notify_rescheduled", notify_rescheduled)
     monkeypatch.setattr(schedule.topics, "update_submission_card", AsyncMock())
     monkeypatch.setattr(schedule.topics, "request_topic_title_sync", AsyncMock())
-    monkeypatch.setattr(schedule, "_render_queue", AsyncMock())
+    monkeypatch.setattr(schedule, "request_queue_render", Mock())
     monkeypatch.setattr(schedule, "_render_schedule", AsyncMock())
 
     await schedule.handle_confirm_yes(callback, session, state, user)

@@ -20,7 +20,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -48,6 +48,12 @@ _dirty: bool = False
 # первый тик на только что загруженной машине не был бы force-рендером, поэтому
 # стартовое значение сдвинуто на интервал назад: первый тик всегда с reconcile.
 _last_render_at: float = -_FORCE_RENDER_INTERVAL
+# Flood control ends the pass (see render_queue_tick); ticks before this moment
+# are skipped so the retry_after Telegram asked for is honoured.
+_retry_not_before: float = 0.0
+# Self-heal probes one unchanged chunk per forced pass, round-robin: editing every
+# chunk each time spent the group's shared editMessageText quota on no-op edits.
+_probe_counter: int = 0
 _render_lock = asyncio.Lock()
 
 _SCHEDULE_KEY = "general:schedule"
@@ -168,12 +174,24 @@ def _chunk_lines(lines: list[str]) -> list[str]:
 async def _render_queue_inner(
     bot: Bot, session: AsyncSession, *, force_reconcile: bool = False
 ) -> None:
+    """Draw the queue board. ``TelegramRetryAfter`` propagates and ends the pass.
+
+    With ``force_reconcile`` one unchanged chunk (round-robin across passes) is
+    edited anyway, so a chunk message deleted in Telegram is found and recreated.
+    """
+    global _probe_counter
+
     group_id = config.moderator_group_id
     lines = await _build_queue_lines(session)
     chunks = _chunk_lines(lines)
     existing = await list_system_messages_by_prefix(session, _QUEUE_KEY_PREFIX)
     # Close the read-only transaction before the first Telegram call below.
     await session.commit()
+
+    probe_idx = None
+    if force_reconcile:
+        probe_idx = _probe_counter % len(chunks)
+        _probe_counter += 1
 
     for idx, chunk_text in enumerate(chunks):
         key = _queue_key(idx)
@@ -184,7 +202,7 @@ async def _render_queue_inner(
             existing_row is not None
             and existing_row.payload
             and existing_row.payload.get("checksum") == cs
-            and not force_reconcile
+            and idx != probe_idx
         ):
             continue  # Content unchanged — skip
 
@@ -208,6 +226,8 @@ async def _render_queue_inner(
                 await session.commit()
                 logger.debug("Очередь [%s] обновлена", key)
                 continue
+            except TelegramRetryAfter:
+                raise
             except TelegramAPIError as e:
                 err = str(e).lower()
                 if "message is not modified" in err:
@@ -295,16 +315,31 @@ async def render_queue_tick(bot: Bot, session: AsyncSession) -> None:
     """Render the queue once when dirty, or when the self-heal interval expires."""
     global _dirty, _last_render_at
 
+    global _retry_not_before
+
     try:
         async with _render_lock:
             loop = asyncio.get_running_loop()
             now = loop.time()
+            if now < _retry_not_before:
+                return
             force = now - _last_render_at >= _FORCE_RENDER_INTERVAL
             if not _dirty and not force:
                 return
 
             _dirty = False
-            await _render_queue_inner(bot, session, force_reconcile=force)
+            try:
+                await _render_queue_inner(bot, session, force_reconcile=force)
+            except TelegramRetryAfter as e:
+                # End the pass instead of hammering the remaining chunks: keep the
+                # board dirty (and a forced pass still due) for the first tick
+                # after retry_after.
+                _dirty = True
+                _retry_not_before = loop.time() + e.retry_after
+                logger.warning(
+                    "Flood control при обновлении очереди, пауза %d с", e.retry_after
+                )
+                return
             _last_render_at = loop.time()
     except Exception:
         logger.warning("Не удалось обновить очередь в General-теме", exc_info=True)

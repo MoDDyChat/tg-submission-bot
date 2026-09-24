@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import core.messages as msg
 from handlers.moderator import unschedule
@@ -31,7 +31,7 @@ async def test_unschedule_cancels_and_reverts_to_pending(monkeypatch) -> None:
     monkeypatch.setattr(unschedule.topic_notifications, "notify_unscheduled", AsyncMock())
     monkeypatch.setattr(unschedule.topics, "update_submission_card", AsyncMock())
     monkeypatch.setattr(unschedule.topics, "request_topic_title_sync", AsyncMock())
-    monkeypatch.setattr(unschedule, "_render_queue", AsyncMock())
+    monkeypatch.setattr(unschedule, "request_queue_render", Mock())
     mock_render_schedule = AsyncMock()
     monkeypatch.setattr(unschedule, "_render_schedule", mock_render_schedule)
 
@@ -128,7 +128,7 @@ async def test_unschedule_proceeds_when_publication_already_gone(monkeypatch) ->
     monkeypatch.setattr(unschedule.topic_notifications, "notify_unscheduled", notify)
     monkeypatch.setattr(unschedule.topics, "update_submission_card", AsyncMock())
     monkeypatch.setattr(unschedule.topics, "request_topic_title_sync", AsyncMock())
-    monkeypatch.setattr(unschedule, "_render_queue", AsyncMock())
+    monkeypatch.setattr(unschedule, "request_queue_render", Mock())
     mock_render_schedule = AsyncMock()
     monkeypatch.setattr(unschedule, "_render_schedule", mock_render_schedule)
 

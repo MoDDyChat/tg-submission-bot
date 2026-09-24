@@ -30,7 +30,7 @@ from services import topic_notifications
 from services import topics as topics_svc
 from services.author_card import request_author_card
 from services.dashboard import request_dashboard
-from services.topics_queue import render_queue as _render_queue
+from services.topics_queue import request_queue_render
 from services.topics_queue import render_schedule as _render_schedule
 from utils.tags import compose_caption
 
@@ -315,7 +315,7 @@ async def publish_post(
                     )
 
             try:
-                await _render_queue(bot, cleanup_session)
+                request_queue_render()
                 await _render_schedule(bot, cleanup_session)
                 request_dashboard()
                 if fresh_sub:

@@ -21,7 +21,7 @@ from services import edit_lock, topic_notifications, topics
 from services.author_card import request_author_card
 from services.dashboard import request_dashboard
 from services.scheduler import cancel_scheduled
-from services.topics_queue import render_queue as _render_queue
+from services.topics_queue import request_queue_render
 from services.topics_queue import render_schedule as _render_schedule
 from states.moderator import ModeratorReview
 
@@ -73,12 +73,14 @@ async def handle_unschedule(
     await session.commit()
 
     logger.info("Пост #%d снят с расписания", sub_id)
+    # Answer before the Telegram calls below, which can wait out flood control.
+    await callback.answer(msg.UNSCHEDULED_OK.format(sub_id=sub_id))
 
     await topic_notifications.notify_unscheduled(callback.bot, session, sub, db_user)
     await topics.update_submission_card(callback.bot, session, sub)
     await topics.request_topic_title_sync(session, sub.user.id)
 
-    await _render_queue(callback.bot, session)
+    request_queue_render()
     await _render_schedule(callback.bot, session)
     request_dashboard()
     request_author_card(sub.user.id)
@@ -96,4 +98,3 @@ async def handle_unschedule(
             pass
     await state.set_state(ModeratorReview.viewing_post)
     await state.update_data(schedule_message_id=None, prompt_message_id=None)
-    await callback.answer(msg.UNSCHEDULED_OK.format(sub_id=sub_id))

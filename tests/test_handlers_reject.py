@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import core.messages as msg
 from handlers.moderator import reject
@@ -76,7 +76,7 @@ async def test_handle_reject_reason_rejects_submission(monkeypatch) -> None:
     monkeypatch.setattr(reject.topics, "finalize_submission_card", AsyncMock())
     monkeypatch.setattr(reject.topics, "request_topic_title_sync", AsyncMock())
     monkeypatch.setattr(reject.edit_lock, "release_lock", AsyncMock())
-    monkeypatch.setattr(reject, "_render_queue", AsyncMock())
+    monkeypatch.setattr(reject, "request_queue_render", Mock())
     monkeypatch.setattr(reject, "_render_schedule", AsyncMock())
     monkeypatch.setattr(reject, "_drop_pending_publication", AsyncMock(return_value=None))
     monkeypatch.setattr(reject, "cancel_scheduled", lambda pub_id: None)
@@ -104,7 +104,7 @@ async def test_handle_reject_reason_skips_dm_when_moderator_is_author(monkeypatc
     monkeypatch.setattr(reject.topics, "finalize_submission_card", AsyncMock())
     monkeypatch.setattr(reject.topics, "request_topic_title_sync", AsyncMock())
     monkeypatch.setattr(reject.edit_lock, "release_lock", AsyncMock())
-    monkeypatch.setattr(reject, "_render_queue", AsyncMock())
+    monkeypatch.setattr(reject, "request_queue_render", Mock())
     monkeypatch.setattr(reject, "_render_schedule", AsyncMock())
     monkeypatch.setattr(reject, "_drop_pending_publication", AsyncMock(return_value=None))
     monkeypatch.setattr(reject, "cancel_scheduled", lambda pub_id: None)
@@ -149,8 +149,8 @@ async def test_handle_reject_reason_race_loser_skips_side_effects(monkeypatch) -
     monkeypatch.setattr(reject.topic_notifications, "notify_rejected", notify_rejected)
     finalize_card = AsyncMock()
     monkeypatch.setattr(reject.topics, "finalize_submission_card", finalize_card)
-    render_queue = AsyncMock()
-    monkeypatch.setattr(reject, "_render_queue", render_queue)
+    render_queue = Mock()
+    monkeypatch.setattr(reject, "request_queue_render", render_queue)
     monkeypatch.setattr(reject, "_drop_pending_publication", AsyncMock())
     monkeypatch.setattr(reject, "_delete_tracked_messages", AsyncMock())
 
@@ -161,7 +161,7 @@ async def test_handle_reject_reason_race_loser_skips_side_effects(monkeypatch) -
     notify_rejected.assert_not_awaited()
     finalize_card.assert_not_awaited()
     message.bot.send_message.assert_not_awaited()
-    render_queue.assert_not_awaited()
+    render_queue.assert_not_called()
 
 
 # ── handle_reject_silent ─────────────────────────────────────────────
@@ -182,7 +182,7 @@ async def test_handle_reject_silent_rejects_without_notification(monkeypatch) ->
     monkeypatch.setattr(reject.topics, "finalize_submission_card", AsyncMock())
     monkeypatch.setattr(reject.topics, "request_topic_title_sync", AsyncMock())
     monkeypatch.setattr(reject.edit_lock, "release_lock", AsyncMock())
-    monkeypatch.setattr(reject, "_render_queue", AsyncMock())
+    monkeypatch.setattr(reject, "request_queue_render", Mock())
     monkeypatch.setattr(reject, "_render_schedule", AsyncMock())
     monkeypatch.setattr(reject, "_drop_pending_publication", AsyncMock(return_value=None))
     monkeypatch.setattr(reject, "cancel_scheduled", lambda pub_id: None)
@@ -214,8 +214,8 @@ async def test_handle_reject_silent_race_loser_skips_side_effects(monkeypatch) -
     monkeypatch.setattr(reject.topic_notifications, "notify_rejected", notify_rejected)
     finalize_card = AsyncMock()
     monkeypatch.setattr(reject.topics, "finalize_submission_card", finalize_card)
-    render_queue = AsyncMock()
-    monkeypatch.setattr(reject, "_render_queue", render_queue)
+    render_queue = Mock()
+    monkeypatch.setattr(reject, "request_queue_render", render_queue)
     monkeypatch.setattr(reject, "_drop_pending_publication", AsyncMock())
 
     await reject.handle_reject_silent(callback, AsyncMock(sub_id=7), session, state, db_user)
@@ -224,7 +224,7 @@ async def test_handle_reject_silent_race_loser_skips_side_effects(monkeypatch) -
     notify_rejected.assert_not_awaited()
     finalize_card.assert_not_awaited()
     callback.bot.send_message.assert_not_awaited()
-    render_queue.assert_not_awaited()
+    render_queue.assert_not_called()
 
 
 # ── scheduled posts: publication must be dropped ─────────────────────
@@ -246,7 +246,7 @@ async def test_handle_reject_silent_drops_publication_of_scheduled_post(monkeypa
     monkeypatch.setattr(reject.topics, "finalize_submission_card", AsyncMock())
     monkeypatch.setattr(reject.topics, "request_topic_title_sync", AsyncMock())
     monkeypatch.setattr(reject.edit_lock, "release_lock", AsyncMock())
-    monkeypatch.setattr(reject, "_render_queue", AsyncMock())
+    monkeypatch.setattr(reject, "request_queue_render", Mock())
     monkeypatch.setattr(reject, "_render_schedule", render_schedule)
     monkeypatch.setattr(reject, "_drop_pending_publication", drop)
     monkeypatch.setattr(reject, "cancel_scheduled", cancelled.append)
@@ -276,7 +276,7 @@ async def test_handle_reject_reason_drops_publication_of_scheduled_post(monkeypa
     monkeypatch.setattr(reject.topics, "finalize_submission_card", AsyncMock())
     monkeypatch.setattr(reject.topics, "request_topic_title_sync", AsyncMock())
     monkeypatch.setattr(reject.edit_lock, "release_lock", AsyncMock())
-    monkeypatch.setattr(reject, "_render_queue", AsyncMock())
+    monkeypatch.setattr(reject, "request_queue_render", Mock())
     monkeypatch.setattr(reject, "_render_schedule", render_schedule)
     monkeypatch.setattr(reject, "_drop_pending_publication", drop)
     monkeypatch.setattr(reject, "cancel_scheduled", cancelled.append)

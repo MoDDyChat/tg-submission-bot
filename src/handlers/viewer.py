@@ -31,7 +31,7 @@ from services.submission_intake import (
     submit_text,
     wait_for_pending_groups,
 )
-from services.topics_queue import render_queue as _render_queue
+from services.topics_queue import request_queue_render
 
 logger = get_logger(__name__)
 
@@ -148,7 +148,7 @@ async def handle_viewer_cancel(
     await topic_notifications.notify_viewer_cancelled(callback.bot, session, sub)
     await topics.finalize_submission_card(callback.bot, session, sub)
     await topics.request_topic_title_sync(session, sub.user.id)
-    await _render_queue(callback.bot, session)
+    request_queue_render()
     request_dashboard()
     request_author_card(db_user.id)
 

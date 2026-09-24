@@ -1,6 +1,8 @@
 import asyncio
 from unittest.mock import AsyncMock, Mock
 
+from aiogram.exceptions import TelegramRetryAfter
+
 import pytest
 
 from services import topics_queue
@@ -10,6 +12,7 @@ from services import topics_queue
 def reset_queue_render_state(monkeypatch) -> None:
     monkeypatch.setattr(topics_queue, "_dirty", False)
     monkeypatch.setattr(topics_queue, "_last_render_at", 0.0)
+    monkeypatch.setattr(topics_queue, "_retry_not_before", 0.0)
 
 
 def test_request_queue_render_only_marks_dirty() -> None:
@@ -77,3 +80,33 @@ async def test_clean_tick_skips_until_force_render_interval(monkeypatch) -> None
     await topics_queue.render_queue_tick(bot, session)
 
     assert render_inner.await_count == 1
+
+
+async def test_flood_control_ends_pass_and_waits_retry_after(monkeypatch) -> None:
+    loop = asyncio.get_running_loop()
+    render_inner = AsyncMock(
+        side_effect=TelegramRetryAfter(method=Mock(), message="Too Many Requests", retry_after=40)
+    )
+    monkeypatch.setattr(topics_queue, "_render_queue_inner", render_inner)
+    last_render = loop.time()
+    monkeypatch.setattr(topics_queue, "_last_render_at", last_render)
+    bot = Mock()
+    session = AsyncMock()
+
+    topics_queue.request_queue_render()
+    await topics_queue.render_queue_tick(bot, session)
+
+    assert topics_queue._dirty is True
+    assert topics_queue._retry_not_before >= loop.time() + 39
+    assert topics_queue._last_render_at == last_render
+
+    # A tick inside the retry_after window does not touch Telegram.
+    await topics_queue.render_queue_tick(bot, session)
+    assert render_inner.await_count == 1
+
+    # The first tick after the window renders the still-dirty board.
+    render_inner.side_effect = None
+    monkeypatch.setattr(topics_queue, "_retry_not_before", loop.time() - 1)
+    await topics_queue.render_queue_tick(bot, session)
+    assert render_inner.await_count == 2
+    assert topics_queue._dirty is False

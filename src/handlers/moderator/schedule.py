@@ -29,7 +29,7 @@ from services.author_card import request_author_card
 from services.dashboard import request_dashboard
 from services.schedule_occupancy import DayOccupancy, get_day_occupancy, get_month_occupancy
 from services.scheduler import cancel_scheduled, schedule_post
-from services.topics_queue import render_queue as _render_queue
+from services.topics_queue import request_queue_render
 from services.topics_queue import render_schedule as _render_schedule
 from states.moderator import ModeratorReview
 from utils.formatting import format_publication_summary
@@ -426,6 +426,14 @@ async def handle_confirm_yes(
         submission_id=sub.id, edited_caption=sub.caption,
     )
 
+    # Answer as soon as the schedule is durable: the Telegram calls below can wait
+    # out flood control, and a callback answered late fails with "query is too old".
+    time_str = publish_at_local.strftime("%d.%m.%Y %H:%M")
+    await callback.answer(
+        msg.SCHEDULED_OK.format(sub_id=sub_id, time=time_str),
+        show_alert=True,
+    )
+
     if is_reschedule:
         await topic_notifications.notify_rescheduled(callback.bot, session, sub, db_user, publish_at_utc)
     else:
@@ -433,12 +441,11 @@ async def handle_confirm_yes(
     await topics.update_submission_card(callback.bot, session, sub)
     await topics.request_topic_title_sync(session, sub.user.id)
 
-    await _render_queue(callback.bot, session)
+    request_queue_render()
     await _render_schedule(callback.bot, session)
     request_dashboard()
     request_author_card(sub.user.id)
 
-    time_str = publish_at_local.strftime("%d.%m.%Y %H:%M")
     logger.info("Пост #%d запланирован на %s", sub_id, time_str)
 
     # Delete the calendar/confirm message
@@ -466,10 +473,6 @@ async def handle_confirm_yes(
         actions_message_id=data.get("actions_message_id"),
         schedule_message_id=None,
         prompt_message_id=None,
-    )
-    await callback.answer(
-        msg.SCHEDULED_OK.format(sub_id=sub_id, time=time_str),
-        show_alert=True,
     )
 
 

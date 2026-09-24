@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import core.messages as msg
 from core.exceptions import PublishFailedError
@@ -54,7 +54,7 @@ async def test_confirm_wins_race_creates_one_publication_and_publishes_once(monk
     publish = AsyncMock()
     monkeypatch.setattr(publish_now, "publish_post", publish)
     monkeypatch.setattr(publish_now.edit_lock, "release_lock", AsyncMock())
-    monkeypatch.setattr(publish_now, "_render_queue", AsyncMock())
+    monkeypatch.setattr(publish_now, "request_queue_render", Mock())
     monkeypatch.setattr(publish_now, "request_dashboard", MagicMock())
     monkeypatch.setattr(publish_now, "request_author_card", MagicMock())
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 
 import core.messages as msg
@@ -185,7 +185,7 @@ async def test_handle_viewer_cancel_updates_status_and_finalizes_mod_channel(mon
     monkeypatch.setattr(viewer.topic_notifications, "notify_viewer_cancelled", AsyncMock())
     monkeypatch.setattr(viewer.topics, "finalize_submission_card", AsyncMock())
     monkeypatch.setattr(viewer.topics, "request_topic_title_sync", AsyncMock())
-    monkeypatch.setattr(viewer, "_render_queue", AsyncMock())
+    monkeypatch.setattr(viewer, "request_queue_render", Mock())
     callback = make_callback(message=make_message())
 
     await viewer.handle_viewer_cancel(callback, SimpleNamespace(sub_id=7), session, db_user)
@@ -207,7 +207,7 @@ async def test_handle_viewer_cancel_loses_race_and_skips_side_effects(monkeypatc
     monkeypatch.setattr(viewer.topic_notifications, "notify_viewer_cancelled", AsyncMock())
     monkeypatch.setattr(viewer.topics, "finalize_submission_card", AsyncMock())
     monkeypatch.setattr(viewer.topics, "request_topic_title_sync", AsyncMock())
-    monkeypatch.setattr(viewer, "_render_queue", AsyncMock())
+    monkeypatch.setattr(viewer, "request_queue_render", Mock())
     callback = make_callback(message=make_message())
 
     await viewer.handle_viewer_cancel(callback, SimpleNamespace(sub_id=7), session, db_user)
@@ -215,7 +215,7 @@ async def test_handle_viewer_cancel_loses_race_and_skips_side_effects(monkeypatc
     viewer.topic_notifications.notify_viewer_cancelled.assert_not_awaited()
     viewer.topics.finalize_submission_card.assert_not_awaited()
     viewer.topics.request_topic_title_sync.assert_not_awaited()
-    viewer._render_queue.assert_not_awaited()
+    viewer.request_queue_render.assert_not_called()
     session.commit.assert_not_awaited()
     callback.message.edit_text.assert_not_awaited()
     callback.answer.assert_awaited_once_with(

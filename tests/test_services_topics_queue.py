@@ -272,6 +272,64 @@ async def test_self_heal_recreates_deleted_chunk_despite_same_checksum(monkeypat
     upsert.assert_awaited_once()
 
 
+def _patch_three_unchanged_chunks(monkeypatch) -> None:
+    lines = [f"<b>{i}</b>. line" for i in range(1, 3 * topics_queue._QUEUE_MAX_LINES_PER_CHUNK + 1)]
+    chunks = topics_queue._chunk_lines(lines)
+    existing = [
+        _make_system_message(topics_queue._queue_key(i), -100999, 10 + i, {"checksum": topics_queue._checksum(c)})
+        for i, c in enumerate(chunks)
+    ]
+    monkeypatch.setattr(topics_queue, "_build_queue_lines", AsyncMock(return_value=lines))
+    monkeypatch.setattr(topics_queue, "list_system_messages_by_prefix", AsyncMock(return_value=existing))
+    monkeypatch.setattr(topics_queue, "upsert_system_message", AsyncMock())
+    monkeypatch.setattr(topics_queue, "delete_system_message", AsyncMock())
+    monkeypatch.setattr(topics_queue.config, "moderator_group_id", -100999)
+    monkeypatch.setattr(topics_queue, "_probe_counter", 0)
+
+
+async def test_self_heal_probes_one_unchanged_chunk_round_robin(monkeypatch) -> None:
+    """Forced pass edits a single unchanged chunk, the next pass the next one."""
+    bot = AsyncMock()
+    session = AsyncMock()
+    _patch_three_unchanged_chunks(monkeypatch)
+
+    await topics_queue._render_queue_inner(bot, session, force_reconcile=True)
+    await topics_queue._render_queue_inner(bot, session, force_reconcile=True)
+
+    edited = [c.kwargs["message_id"] for c in bot.edit_message_text.await_args_list]
+    assert edited == [10, 11]
+
+
+async def test_flood_control_propagates_and_stops_the_pass(monkeypatch) -> None:
+    """TelegramRetryAfter is not swallowed per chunk — the remaining chunks wait."""
+    from aiogram.exceptions import TelegramRetryAfter
+
+    bot = AsyncMock()
+    session = AsyncMock()
+    _patch_three_unchanged_chunks(monkeypatch)
+    # Every chunk changed: all three would be edited.
+    monkeypatch.setattr(
+        topics_queue, "list_system_messages_by_prefix",
+        AsyncMock(return_value=[
+            _make_system_message(topics_queue._queue_key(i), -100999, 10 + i, {"checksum": "old"})
+            for i in range(3)
+        ]),
+    )
+    bot.edit_message_text.side_effect = TelegramRetryAfter(
+        method=MagicMock(), message="Too Many Requests", retry_after=40
+    )
+
+    try:
+        await topics_queue._render_queue_inner(bot, session)
+    except TelegramRetryAfter:
+        pass
+    else:
+        raise AssertionError("TelegramRetryAfter was swallowed")
+
+    bot.edit_message_text.assert_awaited_once()
+    bot.send_message.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Schedule tests
 # ---------------------------------------------------------------------------

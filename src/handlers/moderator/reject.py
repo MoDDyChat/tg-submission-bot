@@ -16,7 +16,7 @@ from services import edit_lock, topic_notifications, topics
 from services.author_card import request_author_card
 from services.dashboard import request_dashboard
 from services.scheduler import cancel_scheduled
-from services.topics_queue import render_queue as _render_queue
+from services.topics_queue import request_queue_render
 from services.topics_queue import render_schedule as _render_schedule
 from states.moderator import ModeratorReview
 from utils.html_entities import get_html_text
@@ -115,7 +115,7 @@ async def handle_reject_reason(
 
     logger.info("Пост #%d отклонён. Причина: %s", sub_id, message.text)
 
-    await _render_queue(message.bot, session)
+    request_queue_render()
     if dropped_pub_id is not None:
         await _render_schedule(message.bot, session)
     request_dashboard()
@@ -196,7 +196,7 @@ async def handle_reject_silent(
 
     logger.info("Пост #%d тихо отклонён.", sub_id)
 
-    await _render_queue(callback.bot, session)
+    request_queue_render()
     if dropped_pub_id is not None:
         await _render_schedule(callback.bot, session)
     request_dashboard()

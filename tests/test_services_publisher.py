@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -29,13 +29,13 @@ def _patch_common(monkeypatch, sub, pub):
     update_status_mock = AsyncMock()
     finalize = AsyncMock()
     update_title = AsyncMock(return_value=True)
-    render_queue = AsyncMock()
+    render_queue = Mock()
     monkeypatch.setattr(publisher, "mark_published", mark_published_mock)
     monkeypatch.setattr(publisher, "update_submission_status", update_status_mock)
     monkeypatch.setattr(publisher.topics_svc, "finalize_submission_card", finalize)
     monkeypatch.setattr(publisher.topics_svc, "request_topic_title_sync", update_title)
     monkeypatch.setattr(publisher.topic_notifications, "notify_published", AsyncMock())
-    monkeypatch.setattr(publisher, "_render_queue", render_queue)
+    monkeypatch.setattr(publisher, "request_queue_render", render_queue)
     monkeypatch.setattr(publisher, "_render_schedule", AsyncMock())
     return mark_published_mock, update_status_mock, finalize, update_title, render_queue
 
@@ -77,7 +77,7 @@ async def test_publish_post_text_only_persists_and_notifies_viewer(monkeypatch) 
     update_status.assert_awaited_once_with(main_session, sub.id, "published")
     finalize.assert_awaited_once()
     update_title.assert_awaited_once_with(cleanup_session, user.id)
-    render_queue.assert_awaited_once_with(bot, cleanup_session)
+    render_queue.assert_called_once_with()
     render_schedule.assert_awaited_once_with(bot, cleanup_session)
     assert bot.send_message.await_args_list[1].args == (
         user.telegram_id,

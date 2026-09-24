@@ -67,7 +67,7 @@
 8. If the compensating deletion also fails, an ambiguous-state error is raised — requires manual review by a moderator
 9. **Phase 2 (best-effort):** Finalizes the card in the forum topic (`finalize_submission_card`) — removes the edit button and updates the status; errors are logged, not blocking
 10. **Phase 3 (best-effort):** Notifies the viewer: "Твой пост опубликован" ("Your post has been published")
-11. **Phase 4 (best-effort):** Updates the queue board (`render_queue(bot, session)`) — removes the published post from the pending list
+11. **Phase 4 (best-effort):** Marks the queue board dirty (`request_queue_render()`) — the next render tick removes the published post from the pending list
 12. All exceptions (not just `MSBotError`) are caught and logged in the scheduler
 
 ---
