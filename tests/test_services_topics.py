@@ -1396,3 +1396,124 @@ async def test_reconcile_terminal_card_matches_finalize_hash() -> None:
 
     assert repaired == 0
     bot.edit_message_text.assert_not_awaited()
+
+
+# ── Flood control longer than the inline wait: deferred repaint ────
+
+async def _await_card_repaint(sub_id: int) -> None:
+    task = topics._card_repaint_tasks.get(sub_id)
+    assert task is not None, "no deferred repaint was scheduled"
+    await task
+
+
+async def test_update_submission_card_long_flood_repaints_in_background() -> None:
+    """retry_after above _CARD_EDIT_MAX_WAIT must not freeze the card."""
+    bot = make_bot()
+    bot.edit_message_text = AsyncMock(
+        side_effect=[TelegramRetryAfter(method=MagicMock(), message="flood", retry_after=40), None]
+    )
+    sub = make_submission(sub_id=324)
+    sub.topic_card_message_id = 900
+    sub.user_id = 1
+    sub.card_rendered_hash = "stale-digest"
+    sleep = AsyncMock()
+    mark = AsyncMock(return_value=True)
+
+    a, b, c = _patched_card_env()
+    with (
+        a, b, c,
+        patch.object(topics.asyncio, "sleep", sleep),
+        patch.object(topics, "_session_factory", FakeSessionFactory(AsyncMock())),
+        patch.object(topics, "get_submission", AsyncMock(return_value=sub)),
+        patch.object(topics, "mark_card_rendered_if_unchanged", mark),
+    ):
+        result = await topics.update_submission_card(bot, AsyncMock(), sub)
+        # The handler returns without sleeping through the ban.
+        assert result is False
+        sleep.assert_not_awaited()
+        await _await_card_repaint(324)
+
+    assert bot.edit_message_text.await_count == 2
+    assert bot.edit_message_text.await_args.kwargs["message_id"] == 900
+    sleep.assert_awaited_once_with(40)
+    mark.assert_awaited_once()
+
+
+async def test_finalize_submission_card_long_flood_repaints_in_background() -> None:
+    bot = make_bot()
+    bot.edit_message_text = AsyncMock(
+        side_effect=[TelegramRetryAfter(method=MagicMock(), message="flood", retry_after=40), None]
+    )
+    sub = make_submission(sub_id=325, status="published")
+    sub.topic_card_message_id = 901
+    sub.card_rendered_hash = "stale-digest"
+
+    with (
+        patch.object(topics, "get_publication_by_submission", AsyncMock(return_value=None)),
+        patch.object(topics, "_resolve_card_lock_owner", AsyncMock(return_value=None)),
+        patch.object(topics.asyncio, "sleep", AsyncMock()),
+        patch.object(topics, "_session_factory", FakeSessionFactory(AsyncMock())),
+        patch.object(topics, "get_submission", AsyncMock(return_value=sub)),
+        patch.object(topics, "mark_card_rendered_if_unchanged", AsyncMock(return_value=True)),
+    ):
+        assert await topics.finalize_submission_card(bot, AsyncMock(), sub) is False
+        await _await_card_repaint(325)
+
+    assert bot.edit_message_text.await_count == 2
+    # A terminal card is repainted without its keyboard.
+    assert bot.edit_message_text.await_args.kwargs["reply_markup"] is None
+
+
+async def test_deferred_card_repaint_gives_up_with_one_warning(caplog) -> None:
+    bot = make_bot()
+    bot.edit_message_text = AsyncMock(
+        side_effect=TelegramRetryAfter(method=MagicMock(), message="flood", retry_after=40)
+    )
+    sub = make_submission(sub_id=326)
+    sub.topic_card_message_id = 902
+    sub.user_id = 1
+    sub.card_rendered_hash = "stale-digest"
+
+    a, b, c = _patched_card_env()
+    with (
+        a, b, c,
+        patch.object(topics.asyncio, "sleep", AsyncMock()),
+        patch.object(topics, "_session_factory", FakeSessionFactory(AsyncMock())),
+        patch.object(topics, "get_submission", AsyncMock(return_value=sub)),
+        caplog.at_level("WARNING"),
+    ):
+        await topics.update_submission_card(bot, AsyncMock(), sub)
+        await _await_card_repaint(326)
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "#326" in warnings[0].getMessage()
+    assert warnings[0].exc_info is None
+
+
+async def test_deferred_card_repaint_skips_card_already_in_sync() -> None:
+    """A later edit that got through leaves nothing for the deferred task to do."""
+    bot = make_bot()
+    bot.edit_message_text = AsyncMock(
+        side_effect=TelegramRetryAfter(method=MagicMock(), message="flood", retry_after=40)
+    )
+    sub = make_submission(sub_id=327)
+    sub.topic_card_message_id = 903
+    sub.user_id = 1
+
+    a, b, c = _patched_card_env()
+    with a, b, c:
+        text, kb = await topics._render_submission_card(bot, AsyncMock(), sub)
+    sub.card_rendered_hash = topics._card_render_hash(text, kb)
+
+    a, b, c = _patched_card_env()
+    with (
+        a, b, c,
+        patch.object(topics.asyncio, "sleep", AsyncMock()),
+        patch.object(topics, "_session_factory", FakeSessionFactory(AsyncMock())),
+        patch.object(topics, "get_submission", AsyncMock(return_value=sub)),
+    ):
+        await topics.update_submission_card(bot, AsyncMock(), sub)
+        await _await_card_repaint(327)
+
+    bot.edit_message_text.assert_awaited_once()

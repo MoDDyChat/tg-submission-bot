@@ -117,7 +117,7 @@ tg-submission-bot/
     │   ├── topics_queue.py       # Queue board: dirty-marker + 60s coalescing tick with 5min self-heal (probes one unchanged chunk per pass, round-robin); flood control ends the pass and defers ticks for retry_after; builds/updates general:queue:NN messages in the General topic; idempotency via MD5; asyncio.Lock against concurrent calls
     │   ├── edit_lock.py          # Optimistic edit locks: acquire/extend/release/force_release + cleanup
     │   ├── admin_notifications.py # Sends DM notifications to all is_admin users on preset/section CRUD
-    │   ├── topic_notifications.py # In-topic notifications (published, rejected, message from mod)
+    │   ├── topic_notifications.py # In-topic notifications (published, rejected, message from mod); flood/network errors re-sent from a background task (≤4 attempts, ≤120 s)
     │   ├── media_append.py       # Album buffering for media append
     │   ├── submission_intake.py  # Viewer media-group buffering on initial submission
     │   ├── author_card.py        # Pinned author card — the opening message of their forum topic; coalesced render job + reconcile self-heal
@@ -160,7 +160,7 @@ Registration order (outer → inner):
 2. **DbSessionMiddleware** — creates an AsyncSession, injects it into `data["session"]`, commits on success / rolls back on `BaseException`
 3. **AuthMiddleware** — upserts the user (`INSERT ... ON CONFLICT`) → `data["db_user"]`; logs new users
 
-Отдельно от цепочки апдейтов работает **session-level request middleware** `middlewares/silent_chats.py`: она проставляет `disable_notification=True` любому методу Bot API, адресованному в `MODERATOR_GROUP_ID`, если вызов не задал флаг явно — модгруппа не звенит на каждой служебной правке карточки. Тот же флаг глушит DM админам в `services/admin_notifications.py`. Выключается через `SILENT_MODERATOR_NOTIFICATIONS=false`.
+Отдельно от цепочки апдейтов работает **session-level request middleware** `middlewares/silent_chats.py`: она проставляет `disable_notification=True` любому методу Bot API, адресованному в `MODERATOR_GROUP_ID`, если вызов не задал флаг явно — модгруппа не звенит на каждой служебной правке карточки. Тот же флаг глушит DM админам в `services/admin_notifications.py`. Выключается через `SILENT_MODERATOR_NOTIFICATIONS=false`. Рядом `middlewares/group_pacing.py` разводит правки (`editMessage*`, `editForumTopic`) в этой группе не чаще одной в секунду — доска, расписание, карточки, дашборд и заголовки тем делят одну квоту.
 
 Every handler gets:
 - `session: AsyncSession` — SQLAlchemy session (auto-committed on success)

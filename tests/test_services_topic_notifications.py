@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from services import topic_notifications
 from tests.helpers import make_bot, make_submission, make_user
 from db.models import UserTopic
@@ -330,3 +332,81 @@ async def test_notify_unbanned_sends_message() -> None:
     assert "@pardner" in text
     assert "@unbanned_user" in text
     assert "разблокировал" in text
+
+
+# ── Flood control: background re-send ─────────────────────────────
+
+def _flood(retry_after: int = 40):
+    from unittest.mock import MagicMock
+
+    from aiogram.exceptions import TelegramRetryAfter
+
+    return TelegramRetryAfter(method=MagicMock(), message="flood", retry_after=retry_after)
+
+
+async def _drain_resends() -> None:
+    import asyncio
+
+    while topic_notifications._resend_tasks:
+        await asyncio.gather(*list(topic_notifications._resend_tasks))
+
+
+async def test_flood_control_notification_is_sent_after_retry_after() -> None:
+    """A throttled notification is re-sent in the background, not dropped."""
+    bot = make_bot()
+    bot.send_message = AsyncMock(side_effect=[_flood(40), None])
+    sub = make_submission(sub_id=324)
+    sleep = AsyncMock()
+
+    with (
+        patch.object(topic_notifications, "get_user_topic", AsyncMock(return_value=_make_topic(topic_id=489))),
+        patch.object(topic_notifications.asyncio, "sleep", sleep),
+    ):
+        await topic_notifications.notify_viewer_cancelled(bot, AsyncMock(), sub)
+        # The handler is not held for the flood wait.
+        assert bot.send_message.await_count == 1
+        await _drain_resends()
+
+    assert bot.send_message.await_count == 2
+    assert bot.send_message.await_args.kwargs["message_thread_id"] == 489
+    assert sleep.await_args.args[0] == pytest.approx(40, abs=1)
+
+
+async def test_network_error_notification_is_retried_shortly() -> None:
+    from aiogram.exceptions import TelegramNetworkError
+
+    bot = make_bot()
+    bot.send_message = AsyncMock(
+        side_effect=[TelegramNetworkError(method=None, message="timeout"), None]  # type: ignore[arg-type]
+    )
+    sleep = AsyncMock()
+
+    with (
+        patch.object(topic_notifications, "get_user_topic", AsyncMock(return_value=_make_topic())),
+        patch.object(topic_notifications.asyncio, "sleep", sleep),
+    ):
+        await topic_notifications.notify_viewer_cancelled(bot, AsyncMock(), make_submission(sub_id=5))
+        await _drain_resends()
+
+    assert bot.send_message.await_count == 2
+    assert sleep.await_args.args[0] <= topic_notifications._SEND_NETWORK_RETRY_DELAY
+
+
+async def test_notification_lost_after_attempts_logs_one_warning(caplog) -> None:
+    bot = make_bot()
+    bot.send_message = AsyncMock(side_effect=_flood(40))
+
+    with (
+        patch.object(topic_notifications, "get_user_topic", AsyncMock(return_value=_make_topic(topic_id=489))),
+        patch.object(topic_notifications.asyncio, "sleep", AsyncMock()),
+        caplog.at_level("WARNING"),
+    ):
+        await topic_notifications.notify_viewer_cancelled(bot, AsyncMock(), make_submission(sub_id=324))
+        await _drain_resends()
+
+    assert bot.send_message.await_count == topic_notifications._SEND_MAX_ATTEMPTS
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "#324" in warnings[0].getMessage()
+    assert "489" in warnings[0].getMessage()
+    assert warnings[0].exc_info is None

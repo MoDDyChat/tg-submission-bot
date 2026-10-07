@@ -16,6 +16,7 @@ from handlers import common, contact, errors, moderator, moderator_invite, servi
 from middlewares.auth import AuthMiddleware
 from middlewares.db import DbSessionMiddleware
 from middlewares.rate_limit import ThrottleMiddleware
+from middlewares.group_pacing import GroupEditPacingMiddleware
 from middlewares.silent_chats import SilentChatsMiddleware
 from services.author_card import author_card_render_job, author_card_reconcile_job
 from services.dashboard import dashboard_render_job, render_dashboard
@@ -307,6 +308,7 @@ async def main() -> None:
         session=bot_session or AiohttpSession(),
         default=DefaultBotProperties(parse_mode="HTML"),
     )
+    bot.session.middleware(GroupEditPacingMiddleware({config.moderator_group_id}))
     if config.silent_moderator_notifications:
         bot.session.middleware(SilentChatsMiddleware({config.moderator_group_id}))
         logger.info(

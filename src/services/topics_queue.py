@@ -41,6 +41,11 @@ from utils.formatting import format_author_name
 logger = get_logger(__name__)
 
 _QUEUE_MAX_LINES_PER_CHUNK = 30
+# Every line carries its global position, so removing a post from the middle of
+# the queue changes every chunk after it. Telegram allows ~20 messages a minute
+# in a group, shared by every edit there; a pass touches at most this many chunks
+# and leaves the rest to the next ticks, so a full redraw spreads over minutes.
+_QUEUE_MAX_EDITS_PER_PASS = 5
 _QUEUE_KEY_PREFIX = "general:queue:"
 _FORCE_RENDER_INTERVAL = 300  # forced self-heal, even if not dirty
 _dirty: bool = False
@@ -173,11 +178,13 @@ def _chunk_lines(lines: list[str]) -> list[str]:
 
 async def _render_queue_inner(
     bot: Bot, session: AsyncSession, *, force_reconcile: bool = False
-) -> None:
+) -> bool:
     """Draw the queue board. ``TelegramRetryAfter`` propagates and ends the pass.
 
     With ``force_reconcile`` one unchanged chunk (round-robin across passes) is
     edited anyway, so a chunk message deleted in Telegram is found and recreated.
+
+    Returns False when ``_QUEUE_MAX_EDITS_PER_PASS`` left chunks outdated.
     """
     global _probe_counter
 
@@ -193,6 +200,8 @@ async def _render_queue_inner(
         probe_idx = _probe_counter % len(chunks)
         _probe_counter += 1
 
+    complete = True
+    edits = 0
     for idx, chunk_text in enumerate(chunks):
         key = _queue_key(idx)
         cs = _checksum(chunk_text)
@@ -205,6 +214,11 @@ async def _render_queue_inner(
             and idx != probe_idx
         ):
             continue  # Content unchanged — skip
+
+        if edits >= _QUEUE_MAX_EDITS_PER_PASS:
+            complete = False
+            break
+        edits += 1
 
         if existing_row is not None:
             # Try to edit in place
@@ -293,6 +307,8 @@ async def _render_queue_inner(
             await session.commit()
             logger.info("Лишний чанк очереди [%s] удалён", extra_row.key)
 
+    return complete
+
 
 async def render_queue(
     bot: Bot, session: AsyncSession, *, force_reconcile: bool = False
@@ -300,7 +316,10 @@ async def render_queue(
     """Update the queue board in the General topic. Best-effort, thread-safe."""
     try:
         async with _render_lock:
-            await _render_queue_inner(bot, session, force_reconcile=force_reconcile)
+            if not await _render_queue_inner(
+                bot, session, force_reconcile=force_reconcile
+            ):
+                request_queue_render()
     except Exception:
         logger.warning("Не удалось обновить очередь в General-теме", exc_info=True)
 
@@ -329,7 +348,8 @@ async def render_queue_tick(bot: Bot, session: AsyncSession) -> None:
 
             _dirty = False
             try:
-                await _render_queue_inner(bot, session, force_reconcile=force)
+                if not await _render_queue_inner(bot, session, force_reconcile=force):
+                    _dirty = True  # the rest of the chunks go out on the next ticks
             except TelegramRetryAfter as e:
                 # End the pass instead of hammering the remaining chunks: keep the
                 # board dirty (and a forced pass still due) for the first tick
@@ -485,6 +505,13 @@ async def _render_schedule_inner(
             )
             await session.commit()
             logger.debug("Расписание обновлено")
+            return
+        except TelegramRetryAfter as e:
+            logger.warning(
+                "Flood control при обновлении расписания (retry after %d с), "
+                "обновится при следующей сверке",
+                e.retry_after,
+            )
             return
         except TelegramAPIError as e:
             err = str(e).lower()

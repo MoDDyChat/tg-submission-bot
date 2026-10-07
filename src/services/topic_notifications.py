@@ -4,17 +4,19 @@ Each public ``notify_*`` function posts a silent system message
 (``disable_notification=True``) to the author's forum topic thread.
 
 All calls are best-effort: a ``TelegramAPIError`` is logged and swallowed
-so that a notification failure never aborts the main moderation flow.
+so that a notification failure never aborts the main moderation flow. Flood
+control and network errors are retried from a background task instead.
 """
 
 from __future__ import annotations
 
+import asyncio
 import html
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import config
@@ -69,18 +71,90 @@ async def _get_topic_id(session: AsyncSession, sub: Submission) -> int | None:
     return topic.topic_id
 
 
-async def _send(bot: Bot, topic_id: int, text: str) -> None:
+# Flood control in the moderator group lasts tens of seconds; sleeping through it
+# in _send would hold the moderator's handler. A throttled notification is re-sent
+# from a background task instead — one at a time, so retries keep their order.
+_SEND_MAX_ATTEMPTS = 4
+_SEND_MAX_TOTAL_WAIT = 120
+_SEND_NETWORK_RETRY_DELAY = 2
+_resend_lock = asyncio.Lock()
+_resend_tasks: set[asyncio.Task] = set()
+
+
+def _target(topic_id: int, sub_id: int | None) -> str:
+    if sub_id is None:
+        return f"в тему {topic_id}"
+    return f"по посту #{sub_id} в тему {topic_id}"
+
+
+async def _send_once(bot: Bot, topic_id: int, text: str) -> None:
+    await bot.send_message(
+        chat_id=config.moderator_group_id,
+        message_thread_id=topic_id,
+        text=text,
+        parse_mode="HTML",
+        disable_notification=True,
+    )
+
+
+async def _send(bot: Bot, topic_id: int, text: str, *, sub_id: int | None = None) -> None:
     """Send a silent system message to a forum topic. Best-effort."""
     try:
-        await bot.send_message(
-            chat_id=config.moderator_group_id,
-            message_thread_id=topic_id,
-            text=text,
-            parse_mode="HTML",
-            disable_notification=True,
+        await _send_once(bot, topic_id, text)
+    except (TelegramRetryAfter, TelegramNetworkError) as exc:
+        delay = (
+            exc.retry_after
+            if isinstance(exc, TelegramRetryAfter)
+            else _SEND_NETWORK_RETRY_DELAY
         )
+        logger.info(
+            "Уведомление %s отложено на %d с (%s)",
+            _target(topic_id, sub_id), delay, type(exc).__name__,
+        )
+        task = asyncio.create_task(_resend_later(bot, topic_id, text, sub_id, delay))
+        _resend_tasks.add(task)
+        task.add_done_callback(_resend_tasks.discard)
     except TelegramAPIError as exc:
-        logger.warning("Не удалось отправить уведомление в тему %d: %s", topic_id, exc)
+        logger.warning("Не удалось отправить уведомление %s: %s", _target(topic_id, sub_id), exc)
+
+
+async def _resend_later(
+    bot: Bot, topic_id: int, text: str, sub_id: int | None, delay: float
+) -> None:
+    """Retry a throttled notification within ``_SEND_MAX_TOTAL_WAIT`` seconds."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _SEND_MAX_TOTAL_WAIT
+    ready_at = loop.time() + delay
+    reason = ""
+    async with _resend_lock:
+        for attempt in range(2, _SEND_MAX_ATTEMPTS + 1):
+            if ready_at > deadline:
+                break
+            await asyncio.sleep(max(0.0, ready_at - loop.time()))
+            try:
+                await _send_once(bot, topic_id, text)
+            except TelegramRetryAfter as exc:
+                reason = f"флуд-контроль, retry after {exc.retry_after} с"
+                ready_at = loop.time() + exc.retry_after
+                continue
+            except TelegramNetworkError as exc:
+                reason = f"сетевая ошибка: {exc}"
+                ready_at = loop.time() + _SEND_NETWORK_RETRY_DELAY
+                continue
+            except TelegramAPIError as exc:
+                logger.warning(
+                    "Не удалось отправить уведомление %s: %s", _target(topic_id, sub_id), exc
+                )
+                return
+            logger.info(
+                "Уведомление %s доставлено с попытки %d", _target(topic_id, sub_id), attempt
+            )
+            return
+    logger.warning(
+        "Уведомление %s потеряно: %s (лимит %d попыток / %d с)",
+        _target(topic_id, sub_id), reason or "флуд-контроль",
+        _SEND_MAX_ATTEMPTS, _SEND_MAX_TOTAL_WAIT,
+    )
 
 
 def _format_time(dt: datetime) -> str:
@@ -106,7 +180,7 @@ async def notify_caption_changed(
     text = TOPIC_NOTIFY_CAPTION_CHANGED.format(
         mod=_mod_display(moderator), sub_id=sub.id, diff=diff
     )
-    await _send(bot, topic_id, text)
+    await _send(bot, topic_id, text, sub_id=sub.id)
 
 
 async def notify_media_changed(
@@ -119,7 +193,7 @@ async def notify_media_changed(
     if topic_id is None:
         return
     text = TOPIC_NOTIFY_MEDIA_CHANGED.format(mod=_mod_display(moderator), sub_id=sub.id)
-    await _send(bot, topic_id, text)
+    await _send(bot, topic_id, text, sub_id=sub.id)
 
 
 async def notify_tags_changed(
@@ -137,7 +211,7 @@ async def notify_tags_changed(
     text = TOPIC_NOTIFY_TAGS_CHANGED.format(
         mod=_mod_display(moderator), sub_id=sub.id, diff=diff
     )
-    await _send(bot, topic_id, text)
+    await _send(bot, topic_id, text, sub_id=sub.id)
 
 
 async def notify_scheduled(
@@ -155,7 +229,7 @@ async def notify_scheduled(
         sub_id=sub.id,
         time=_format_time(publish_at_utc),
     )
-    await _send(bot, topic_id, text)
+    await _send(bot, topic_id, text, sub_id=sub.id)
 
 
 async def notify_rescheduled(
@@ -173,7 +247,7 @@ async def notify_rescheduled(
         sub_id=sub.id,
         time=_format_time(publish_at_utc),
     )
-    await _send(bot, topic_id, text)
+    await _send(bot, topic_id, text, sub_id=sub.id)
 
 
 async def notify_unscheduled(
@@ -186,7 +260,7 @@ async def notify_unscheduled(
     if topic_id is None:
         return
     text = TOPIC_NOTIFY_UNSCHEDULED.format(mod=_mod_display(moderator), sub_id=sub.id)
-    await _send(bot, topic_id, text)
+    await _send(bot, topic_id, text, sub_id=sub.id)
 
 
 async def notify_published(
@@ -205,7 +279,7 @@ async def notify_published(
         )
     else:
         text = TOPIC_NOTIFY_PUBLISHED_SCHEDULED.format(sub_id=sub.id)
-    await _send(bot, topic_id, text)
+    await _send(bot, topic_id, text, sub_id=sub.id)
 
 
 async def notify_rejected(
@@ -228,7 +302,7 @@ async def notify_rejected(
             sub_id=sub.id,
             reason=html.escape(reason),
         )
-    await _send(bot, topic_id, text)
+    await _send(bot, topic_id, text, sub_id=sub.id)
 
 
 async def notify_banned(
@@ -246,7 +320,7 @@ async def notify_banned(
         sub_id=sub.id,
         reason=html.escape(reason),
     )
-    await _send(bot, topic_id, text)
+    await _send(bot, topic_id, text, sub_id=sub.id)
 
 
 async def notify_unbanned(
@@ -277,7 +351,7 @@ async def notify_viewer_cancelled(
     if topic_id is None:
         return
     text = TOPIC_NOTIFY_VIEWER_CANCELLED.format(sub_id=sub.id)
-    await _send(bot, topic_id, text)
+    await _send(bot, topic_id, text, sub_id=sub.id)
 
 
 async def notify_contact_from_moderator(
@@ -294,7 +368,7 @@ async def notify_contact_from_moderator(
         mod=_mod_display(moderator),
         text=html.escape(text),
     )
-    await _send(bot, topic_id, msg)
+    await _send(bot, topic_id, msg, sub_id=sub.id)
 
 
 async def notify_contact_from_viewer(
@@ -307,7 +381,7 @@ async def notify_contact_from_viewer(
     if topic_id is None:
         return
     msg = TOPIC_CONTACT_FROM_VIEWER.format(text=html.escape(text))
-    await _send(bot, topic_id, msg)
+    await _send(bot, topic_id, msg, sub_id=sub.id)
 
 
 async def notify_direct_from_moderator(

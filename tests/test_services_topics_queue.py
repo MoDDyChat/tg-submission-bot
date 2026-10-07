@@ -530,3 +530,96 @@ async def test_build_schedule_lines_no_dead_block_when_none_dead(monkeypatch) ->
     text = "\n".join(lines)
 
     assert "Не будут опубликованы" not in text
+
+
+# ---------------------------------------------------------------------------
+# Edit cap per pass: a mid-queue change must not redraw every chunk at once
+# ---------------------------------------------------------------------------
+
+
+def _patch_board(monkeypatch, old_lines: list[str], new_lines: list[str]) -> None:
+    """Existing chunk rows carry the checksums of ``old_lines``; render ``new_lines``."""
+    existing = [
+        _make_system_message(
+            topics_queue._queue_key(i), -100999, 10 + i,
+            {"checksum": topics_queue._checksum(text)},
+        )
+        for i, text in enumerate(topics_queue._chunk_lines(old_lines))
+    ]
+    monkeypatch.setattr(topics_queue, "_build_queue_lines", AsyncMock(return_value=new_lines))
+    monkeypatch.setattr(topics_queue, "list_system_messages_by_prefix", AsyncMock(return_value=existing))
+    monkeypatch.setattr(topics_queue, "upsert_system_message", AsyncMock())
+    monkeypatch.setattr(topics_queue, "delete_system_message", AsyncMock())
+    monkeypatch.setattr(topics_queue.config, "moderator_group_id", -100999)
+    monkeypatch.setattr(topics_queue, "_probe_counter", 0)
+
+
+def _numbered(sub_ids: list[int]) -> list[str]:
+    return [f"<b>{i}</b>. post #{sid}" for i, sid in enumerate(sub_ids, start=1)]
+
+
+async def test_mid_queue_insert_does_not_redraw_every_chunk(monkeypatch) -> None:
+    """Inserting in chunk 0 of a 16-chunk board shifts every later line, yet one
+    pass edits at most _QUEUE_MAX_EDITS_PER_PASS chunks and reports the rest."""
+    old_ids = list(range(1000, 1480))  # 480 lines → 16 chunks
+    new_ids = old_ids[:10] + [9999] + old_ids[10:]
+    _patch_board(monkeypatch, _numbered(old_ids), _numbered(new_ids))
+    bot = AsyncMock()
+
+    complete = await topics_queue._render_queue_inner(bot, AsyncMock())
+
+    assert complete is False
+    edited = [c.kwargs["message_id"] for c in bot.edit_message_text.await_args_list]
+    assert edited == [10 + i for i in range(topics_queue._QUEUE_MAX_EDITS_PER_PASS)]
+    bot.send_message.assert_not_awaited()
+
+
+async def test_capped_pass_converges_over_following_passes(monkeypatch) -> None:
+    old_lines = _numbered(list(range(1000, 1480)))
+    new_lines = _numbered(list(range(1000, 1010)) + [9999] + list(range(1010, 1480)))
+    _patch_board(monkeypatch, old_lines, new_lines)
+    rows = await topics_queue.list_system_messages_by_prefix(None, "")
+
+    async def record(session, key, chat_id, message_id, payload):
+        row = next((r for r in rows if r.key == key), None)
+        if row is None:
+            rows.append(_make_system_message(key, chat_id, message_id, payload))
+        else:
+            row.payload = payload
+
+    monkeypatch.setattr(topics_queue, "upsert_system_message", AsyncMock(side_effect=record))
+    bot = AsyncMock()
+
+    passes = 0
+    while not await topics_queue._render_queue_inner(bot, AsyncMock()):
+        passes += 1
+        assert passes < 10
+
+    # 16 old chunks changed + 1 new chunk created (481 lines → 17 chunks).
+    assert bot.edit_message_text.await_count == 16
+    bot.send_message.assert_awaited_once()
+
+
+async def test_small_change_renders_in_one_pass(monkeypatch) -> None:
+    """Without a cascade the board behaves as before: one pass, complete."""
+    ids = list(range(1000, 1480))
+    old_lines = _numbered(ids)
+    new_lines = old_lines[:-1] + [old_lines[-1] + " (scheduled)"]
+    _patch_board(monkeypatch, old_lines, new_lines)
+    bot = AsyncMock()
+
+    assert await topics_queue._render_queue_inner(bot, AsyncMock()) is True
+    assert bot.edit_message_text.await_count == 1
+
+
+async def test_tick_keeps_board_dirty_after_capped_pass(monkeypatch) -> None:
+    import asyncio
+
+    monkeypatch.setattr(topics_queue, "_dirty", True)
+    monkeypatch.setattr(topics_queue, "_retry_not_before", 0.0)
+    monkeypatch.setattr(topics_queue, "_last_render_at", asyncio.get_running_loop().time())
+    monkeypatch.setattr(topics_queue, "_render_queue_inner", AsyncMock(return_value=False))
+
+    await topics_queue.render_queue_tick(AsyncMock(), AsyncMock())
+
+    assert topics_queue._dirty is True

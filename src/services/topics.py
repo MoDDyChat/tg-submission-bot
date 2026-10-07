@@ -42,6 +42,7 @@ from core.messages import (
 )
 from core.topic_status_config import get_style as _get_status_style
 from db.models import EditLock, Submission, User, UserTopic
+from db.session import session_factory as _session_factory
 from db.queries import (
     clear_topic_card_ids,
     delete_system_message,
@@ -928,9 +929,9 @@ async def _edit_card_with_retry(
 ) -> None:
     """Edit a submission card, retrying transient flood/network errors.
 
-    Without this, a single ``TelegramRetryAfter`` (the moderator group shares its
-    ``EditMessageText`` quota with the queue board) leaves the card frozen in its
-    previous state forever — there is no reconcile pass for cards.
+    Short waits are slept through inline. A ``TelegramRetryAfter`` longer than
+    ``_CARD_EDIT_MAX_WAIT`` propagates at once: callers hand the card to
+    ``_defer_card_repaint`` instead of holding a handler for the whole ban.
 
     Returns normally when the card already carries the target content
     ("message is not modified"). Other ``TelegramBadRequest`` errors and a final
@@ -1052,6 +1053,9 @@ async def update_submission_card(
             exc_info=True,
         )
         return False
+    except TelegramRetryAfter as exc:
+        _defer_card_repaint(bot, submission.id, exc.retry_after)
+        return False
     except Exception:
         logger.warning(
             "Не удалось обновить карточку поста #%d в теме",
@@ -1109,6 +1113,9 @@ async def finalize_submission_card(
             exc_info=True,
         )
         return False
+    except TelegramRetryAfter as exc:
+        _defer_card_repaint(bot, submission.id, exc.retry_after)
+        return False
     except Exception:
         logger.warning(
             "Не удалось финализировать карточку поста #%d",
@@ -1162,28 +1169,74 @@ async def _collect_card_repairs(
         for sub in candidates:
             if len(repairs) >= max_repairs:
                 break
-            if sub.topic_card_message_id is None:
-                continue
-
-            text, kb = await _render_submission_card(bot, session, sub)
-            is_terminal = sub.status in _CARD_TERMINAL_STATUSES
-            markup = None if is_terminal else kb
-            target_hash = _card_render_hash(text, markup)
-            if target_hash == sub.card_rendered_hash:
-                continue
-
-            repairs.append(
-                _CardRepair(
-                    sub_id=sub.id,
-                    message_id=sub.topic_card_message_id,
-                    text=text,
-                    markup=markup,
-                    target_hash=target_hash,
-                    original_hash=sub.card_rendered_hash,
-                )
-            )
+            repair = await _card_repair_for(bot, session, sub)
+            if repair is not None:
+                repairs.append(repair)
         await session.commit()
         return repairs, len(candidates)
+
+
+async def _card_repair_for(
+    bot: Bot, session: AsyncSession, sub: Submission
+) -> _CardRepair | None:
+    """Return the repaint ``sub``'s card needs, or ``None`` when it is in sync."""
+    if sub.topic_card_message_id is None:
+        return None
+
+    text, kb = await _render_submission_card(bot, session, sub)
+    is_terminal = sub.status in _CARD_TERMINAL_STATUSES
+    markup = None if is_terminal else kb
+    target_hash = _card_render_hash(text, markup)
+    if target_hash == sub.card_rendered_hash:
+        return None
+
+    return _CardRepair(
+        sub_id=sub.id,
+        message_id=sub.topic_card_message_id,
+        text=text,
+        markup=markup,
+        target_hash=target_hash,
+        original_hash=sub.card_rendered_hash,
+    )
+
+
+async def _apply_card_repair(
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    repair: _CardRepair,
+) -> bool:
+    """Repaint one drifted card and record it. Returns True when recorded.
+
+    ``TelegramRetryAfter`` and unexpected errors propagate.
+    """
+    try:
+        await _edit_card_with_retry(
+            bot,
+            repair.message_id,
+            repair.text,
+            repair.markup,
+            sub_id=repair.sub_id,
+        )
+    except TelegramBadRequest as e:
+        err = str(e).lower()
+        if any(hint in err for hint in _CARD_GONE_HINTS):
+            # The card is gone for good; Recover re-creates it on demand.
+            async with session_factory() as session:
+                await clear_topic_card_ids(session, repair.sub_id)
+                await session.commit()
+            logger.info(
+                "Карточка поста #%d потеряна в теме, ссылки очищены",
+                repair.sub_id,
+            )
+            return False
+        raise
+
+    async with session_factory() as session:
+        applied = await mark_card_rendered_if_unchanged(
+            session, repair.sub_id, repair.target_hash, repair.original_hash
+        )
+        await session.commit()
+    return applied
 
 
 async def reconcile_submission_cards(
@@ -1215,42 +1268,22 @@ async def reconcile_submission_cards(
         if repaired:
             await asyncio.sleep(_CARD_RECONCILE_DELAY)
         try:
-            await _edit_card_with_retry(
-                bot,
-                repair.message_id,
-                repair.text,
-                repair.markup,
-                sub_id=repair.sub_id,
-            )
-        except TelegramBadRequest as e:
-            err = str(e).lower()
-            if any(hint in err for hint in _CARD_GONE_HINTS):
-                # The card is gone for good; Recover re-creates it on demand.
-                async with session_factory() as session:
-                    await clear_topic_card_ids(session, repair.sub_id)
-                    await session.commit()
-                logger.info(
-                    "Карточка поста #%d потеряна в теме, ссылки очищены",
-                    repair.sub_id,
-                )
-                continue
+            applied = await _apply_card_repair(bot, session_factory, repair)
+        except TelegramRetryAfter as exc:
+            # The rest of the pass would only hit the same ban; the next run
+            # picks the remaining drift up.
             logger.warning(
-                "Reconcile карточек: не удалось починить пост #%d",
-                repair.sub_id, exc_info=True,
+                "Reconcile карточек: флуд-контроль на посте #%d (retry after %d с), "
+                "проход остановлен",
+                repair.sub_id, exc.retry_after,
             )
-            continue
+            break
         except Exception:
             logger.warning(
                 "Reconcile карточек: не удалось починить пост #%d",
                 repair.sub_id, exc_info=True,
             )
             continue
-
-        async with session_factory() as session:
-            applied = await mark_card_rendered_if_unchanged(
-                session, repair.sub_id, repair.target_hash, repair.original_hash
-            )
-            await session.commit()
         if applied:
             repaired += 1
 
@@ -1260,6 +1293,57 @@ async def reconcile_submission_cards(
             repaired, examined,
         )
     return repaired
+
+
+# A card edit that hit a flood wait longer than _CARD_EDIT_MAX_WAIT is repainted
+# from a background task once the ban lifts, instead of waiting for the next
+# reconcile pass (every 10 min). The task re-reads the DB, so it paints the
+# card's latest state and does nothing if a later edit already got through.
+_CARD_DEFER_MAX_ROUNDS = 3
+_card_repaint_tasks: dict[int, asyncio.Task] = {}
+
+
+def _defer_card_repaint(bot: Bot, sub_id: int, delay: float) -> None:
+    """Schedule a background repaint of ``sub_id``'s card after ``delay`` s."""
+    if sub_id in _card_repaint_tasks:
+        logger.info("Карточка поста #%d уже ждёт повторной правки", sub_id)
+        return
+    logger.info(
+        "Флуд-контроль при правке карточки поста #%d, повтор через %d с",
+        sub_id, delay,
+    )
+    task = asyncio.create_task(_deferred_card_repaint(bot, sub_id, delay))
+    _card_repaint_tasks[sub_id] = task
+    task.add_done_callback(lambda _t: _card_repaint_tasks.pop(sub_id, None))
+
+
+async def _deferred_card_repaint(bot: Bot, sub_id: int, delay: float) -> None:
+    for _ in range(_CARD_DEFER_MAX_ROUNDS):
+        await asyncio.sleep(delay)
+        try:
+            async with _session_factory() as session:
+                sub = await get_submission(session, sub_id)
+                repair = (
+                    await _card_repair_for(bot, session, sub) if sub is not None else None
+                )
+                await session.commit()
+            if repair is not None:
+                await _apply_card_repair(bot, _session_factory, repair)
+                logger.info("Карточка поста #%d обновлена после флуд-контроля", sub_id)
+            return
+        except TelegramRetryAfter as exc:
+            delay = exc.retry_after
+        except Exception:
+            logger.warning(
+                "Не удалось обновить карточку поста #%d после флуд-контроля",
+                sub_id, exc_info=True,
+            )
+            return
+    logger.warning(
+        "Карточка поста #%d не обновлена: флуд-контроль после %d повторов, "
+        "её поправит reconcile карточек",
+        sub_id, _CARD_DEFER_MAX_ROUNDS,
+    )
 
 
 async def _mark_card_outdated(bot: Bot, msg_id: int, sub_id: int) -> None:
