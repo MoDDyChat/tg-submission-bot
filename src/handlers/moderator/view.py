@@ -15,6 +15,7 @@ from db.queries import get_submission_with_user
 from keyboards.moderator import submission_actions_kb
 from states.moderator import ModeratorReview
 from utils.formatting import format_submission_preview
+from utils.tags import MAX_MEDIA_CAPTION, strip_html_for_length
 
 from ._helpers import TERMINAL_STATUSES
 
@@ -63,6 +64,10 @@ async def render_submission_view(
     await state.update_data(sub_id=sub_id)
 
     media_message_ids: list[int] = []
+    # Шапка превью плюс описание у самого лимита не влезают в подпись к медиа —
+    # тогда медиа уходит без подписи, а текст отдельным сообщением следом.
+    caption_fits = len(strip_html_for_length(text)) <= MAX_MEDIA_CAPTION
+    caption = text if caption_fits else None
     if media_list:
         if len(media_list) == 1:
             m = media_list[0]
@@ -72,7 +77,7 @@ async def render_submission_view(
                 "animation": message.answer_animation,
                 "document": message.answer_document,
             }.get(m.media_type, message.answer_document)
-            sent = await send_fn(m.file_id, caption=text, parse_mode="HTML")
+            sent = await send_fn(m.file_id, caption=caption, parse_mode="HTML")
             media_message_ids.append(sent.message_id)
         else:
             media_map = {
@@ -84,13 +89,16 @@ async def render_submission_view(
             group = [
                 media_map.get(item.media_type, InputMediaDocument)(
                     media=item.file_id,
-                    caption=text if i == 0 else None,
+                    caption=caption if i == 0 else None,
                     parse_mode="HTML" if i == 0 else None,
                 )
                 for i, item in enumerate(media_list)
             ]
             sent_group = await message.answer_media_group(group)
             media_message_ids.extend(m.message_id for m in sent_group)
+        if not caption_fits:
+            sent = await message.answer(text, parse_mode="HTML")
+            media_message_ids.append(sent.message_id)
     else:
         # Text-only submission: send the preview info as a regular message
         sent = await message.answer(text, parse_mode="HTML")
