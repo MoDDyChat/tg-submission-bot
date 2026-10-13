@@ -40,7 +40,7 @@ class ViewerCancelCB(CallbackData, prefix="vcancel"):
 
 
 class TagWizardCB(CallbackData, prefix="tagwiz"):
-    action: Literal["toggle", "page_next", "page_prev", "custom_finish", "back_presets"]
+    action: Literal["toggle", "page_next", "page_prev", "custom_finish", "back_presets", "remove_custom"]
     value: str | None = ""
 
 

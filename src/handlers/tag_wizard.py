@@ -21,7 +21,7 @@ from db.queries import (
 )
 from filters.not_command import NotCommand
 from keyboards.callbacks import SubmissionCB, TagWizardCB
-from keyboards.tags import tags_custom_kb, tags_preset_page_kb
+from keyboards.tags import custom_tag_token, tags_custom_kb, tags_preset_page_kb
 from services import edit_lock, topic_notifications, topics
 from services.tag_parsing import deserialize_suggested
 from states.moderator import ModeratorReview
@@ -210,13 +210,16 @@ def _build_wizard_view(
         )
         state = ModeratorReview.editing_tags_presets
     else:
-        text = _build_preview_text(tags, caption, msg.TAGS_WIZARD_CUSTOM)
+        prompt = msg.TAGS_WIZARD_CUSTOM
+        if custom:
+            prompt += msg.TAGS_WIZARD_CUSTOM_REMOVE_HINT
+        text = _build_preview_text(tags, caption, prompt)
         hint_parts = _format_suggested_hint(data.get("wizard_suggested_unknown", []))
         if hint_parts:
             text += "\n\n" + msg.TAGS_WIZARD_SUGGESTED_HINT.format(
                 tags=", ".join(hint_parts)
             )
-        keyboard = tags_custom_kb(can_go_back=bool(sections))
+        keyboard = tags_custom_kb(custom, can_go_back=bool(sections))
         state = ModeratorReview.editing_tags_custom
 
     return state, text, keyboard, selected_by_section, custom, page_index
@@ -490,6 +493,41 @@ async def handle_custom_tags_text(
         pass
 
     await _render_wizard_message(message.bot, message.chat.id, state, session)
+
+
+@router.callback_query(ModeratorReview.editing_tags_custom, TagWizardCB.filter(F.action == "remove_custom"))
+async def handle_remove_custom_tag(
+    callback: CallbackQuery,
+    callback_data: TagWizardCB,
+    session: AsyncSession,
+    state: FSMContext,
+    db_user: User,
+) -> None:
+    if not await _extend_lock_from_state(session, state, db_user.id):
+        await state.clear()
+        await callback.answer(msg.MODERATOR_LOCK_LOST, show_alert=True)
+        return
+    data = await state.get_data()
+    custom = [tag for tag in data.get("wizard_custom", []) if isinstance(tag, str)]
+    removed = next((tag for tag in custom if custom_tag_token(tag) == callback_data.value), None)
+    if removed is not None:
+        custom.remove(removed)
+        await state.update_data(wizard_custom=custom)
+
+    # Тега уже нет (двойное нажатие по старой клавиатуре) — просто перерисуем актуальную.
+    await _render_wizard_message(
+        callback.bot,
+        callback.message.chat.id,
+        state,
+        session,
+        message_id=callback.message.message_id,
+    )
+    if removed is not None:
+        # Тост ограничен 200 символами, а связка из старого пресета бывает до 255.
+        shown = removed if len(removed) <= 40 else removed[:40] + "..."
+        await callback.answer(msg.CUSTOM_TAG_REMOVED.format(tag=shown))
+    else:
+        await callback.answer()
 
 
 @router.callback_query(ModeratorReview.editing_tags_custom, TagWizardCB.filter(F.action == "back_presets"))

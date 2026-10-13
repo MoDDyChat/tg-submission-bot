@@ -561,3 +561,98 @@ async def test_handle_custom_tags_text_lock_lost_clears_fsm(monkeypatch) -> None
 
     assert state.cleared is True
     message.answer.assert_awaited_once_with(msg.MODERATOR_LOCK_LOST)
+
+
+def test_build_wizard_view_custom_page_lists_removable_custom_tags() -> None:
+    from keyboards.callbacks import TagWizardCB
+    from keyboards.tags import custom_tag_token
+
+    sections, grouped = _wizard_data()
+    long_group = "МайнШилд4" * 6 + " | #MineShield4"
+    _, text, keyboard, *_ = tag_wizard._build_wizard_view(
+        {
+            "wizard_sections": {"category": [], "character": []},
+            "wizard_custom": ["Custom", long_group],
+            "wizard_page_index": len(sections),
+        },
+        sections,
+        grouped,
+    )
+
+    assert msg.TAGS_WIZARD_CUSTOM_REMOVE_HINT in text
+    buttons = [row[0] for row in keyboard.inline_keyboard[:2]]
+    assert [button.text for button in buttons] == ["✖ #Custom", f"✖ #{long_group}"]
+    for button, tag in zip(buttons, ["Custom", long_group]):
+        # Telegram отбрасывает callback_data длиннее 64 байт.
+        assert len(button.callback_data.encode("utf-8")) <= 64
+        assert TagWizardCB.unpack(button.callback_data).value == custom_tag_token(tag)
+
+
+def test_build_wizard_view_custom_page_without_custom_tags_has_no_remove_hint() -> None:
+    sections, grouped = _wizard_data()
+    _, text, keyboard, *_ = tag_wizard._build_wizard_view(
+        {
+            "wizard_sections": {"category": [], "character": []},
+            "wizard_custom": [],
+            "wizard_page_index": len(sections),
+        },
+        sections,
+        grouped,
+    )
+
+    assert msg.TAGS_WIZARD_CUSTOM_REMOVE_HINT not in text
+    assert [row[0].text for row in keyboard.inline_keyboard] == ["← Назад", "Завершить редактирование"]
+
+
+async def test_handle_remove_custom_tag_drops_tag_and_rerenders(monkeypatch) -> None:
+    from keyboards.callbacks import TagWizardCB
+    from keyboards.tags import custom_tag_token
+
+    render = AsyncMock()
+    monkeypatch.setattr(tag_wizard, "_extend_lock_from_state", AsyncMock(return_value=True))
+    monkeypatch.setattr(tag_wizard, "_render_wizard_message", render)
+
+    state = FakeState({"sub_id": 5, "wizard_custom": ["Keep", "Drop"]})
+    callback = make_callback(message=make_message())
+
+    cb_data = TagWizardCB(action="remove_custom", value=custom_tag_token("Drop"))
+    await tag_wizard.handle_remove_custom_tag(callback, cb_data, AsyncMock(), state, make_user())
+
+    assert state.data["wizard_custom"] == ["Keep"]
+    render.assert_awaited_once()
+    callback.answer.assert_awaited_once_with(msg.CUSTOM_TAG_REMOVED.format(tag="Drop"))
+
+
+async def test_handle_remove_custom_tag_stale_button_only_rerenders(monkeypatch) -> None:
+    """Повторное нажатие по уже удалённому тегу ничего не ломает."""
+    from keyboards.callbacks import TagWizardCB
+    from keyboards.tags import custom_tag_token
+
+    render = AsyncMock()
+    monkeypatch.setattr(tag_wizard, "_extend_lock_from_state", AsyncMock(return_value=True))
+    monkeypatch.setattr(tag_wizard, "_render_wizard_message", render)
+
+    state = FakeState({"sub_id": 5, "wizard_custom": ["Keep"]})
+    callback = make_callback(message=make_message())
+
+    cb_data = TagWizardCB(action="remove_custom", value=custom_tag_token("Drop"))
+    await tag_wizard.handle_remove_custom_tag(callback, cb_data, AsyncMock(), state, make_user())
+
+    assert state.data["wizard_custom"] == ["Keep"]
+    render.assert_awaited_once()
+    callback.answer.assert_awaited_once_with()
+
+
+async def test_handle_remove_custom_tag_lock_lost_clears_fsm(monkeypatch) -> None:
+    from keyboards.callbacks import TagWizardCB
+
+    monkeypatch.setattr(tag_wizard, "_extend_lock_from_state", AsyncMock(return_value=False))
+
+    state = FakeState({"sub_id": 5, "wizard_custom": ["Keep"]})
+    callback = make_callback(message=make_message())
+
+    cb_data = TagWizardCB(action="remove_custom", value="whatever")
+    await tag_wizard.handle_remove_custom_tag(callback, cb_data, AsyncMock(), state, make_user())
+
+    assert state.cleared is True
+    callback.answer.assert_awaited_once_with(msg.MODERATOR_LOCK_LOST, show_alert=True)

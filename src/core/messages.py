@@ -91,6 +91,8 @@ _DEFAULTS: dict[str, str | dict[str, str]] = {
     'TAGS_WIZARD_SECTION': 'Выберите теги из раздела «{section}»:',
     'TAGS_WIZARD_SECTION_EMPTY_HINT': '\n\n<i>В этом разделе пока нет пресетов. Добавить их можно в Управление → Пресеты тегов, либо ввести теги вручную на странице «Кастомные теги».</i>',
     'TAGS_WIZARD_CUSTOM': 'Отправьте дополнительные теги текстом (например: #тег1 #тег2),\nили нажмите «Завершить редактирование».',
+    'TAGS_WIZARD_CUSTOM_REMOVE_HINT': '\nЧтобы убрать тег, нажмите на него ниже.',
+    'CUSTOM_TAG_REMOVED': 'Тег #{tag} убран.',
     'TAGS_WIZARD_SUGGESTED_HINT': '💡 Автор предлагал теги: {tags}\nОтправь нужные из них сообщением, если хочешь добавить.',
     'TAGS_WIZARD_SUGGESTED_FUZZY': '#{raw} (похоже на #{guess})',
     'TAGS_UPDATED': 'Теги обновлены.',

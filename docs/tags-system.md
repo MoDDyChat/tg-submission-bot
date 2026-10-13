@@ -75,6 +75,8 @@ The wizard structure is now dynamic:
 1. Each section from `tag_preset_sections` gets its own selection page
 2. After the last section there's always a **Custom** page
 
+On the Custom page every tag in `wizard_custom` gets its own `✖ #tag` button (one per row — groups are long); a tap drops it from the draft, re-renders the preview and shows a toast. This is the only way to remove a custom tag, including one left over from a deleted preset. The button carries `custom_tag_token(tag)` — a 10-char sha1 prefix — rather than the tag (a 64-char Cyrillic tag overflows the 64-byte `callback_data`) or its index (indices shift after every removal, so a double tap would hit the neighbour). A stale tap on an already-removed tag just re-renders.
+
 Each page shows a live preview of the final post (tags + description). On re-entry, previously selected presets are recognized against the current DB data.
 
 Edge-case rules:
@@ -129,7 +131,7 @@ Prefill only happens while `submissions.tags` is still empty. `wizard_suggested_
 | Factory | Prefix | Fields | Purpose |
 |---------|--------|------|-----------|
 | SubmissionCB | sub | action, sub_id | Post actions (edit_caption, edit_tags, schedule, unschedule, publish_now, reject, reject_silent, ban_author, contact, close) |
-| TagWizardCB | tagwiz | action, value | Tag wizard (`toggle`, `page_next`, `page_prev`, `back_presets`, `custom_finish`) |
+| TagWizardCB | tagwiz | action, value | Tag wizard (`toggle`, `page_next`, `page_prev`, `back_presets`, `custom_finish`, `remove_custom`) |
 | CalendarCB | cal | action, year, month, day | Date picker; action: day, prev_month, next_month, ignore, back_to_cal, back_to_hours |
 | TimeCB | time | hour, minute | Time picker |
 | ConfirmCB | confirm | action | Confirmation (yes, no, back) |

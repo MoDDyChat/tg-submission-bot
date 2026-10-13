@@ -1,11 +1,21 @@
 """Inline keyboards for the dynamic tag editing wizard."""
 
+import hashlib
 from collections.abc import Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from db.models import TagPresetEntry, TagPresetSection
 from keyboards.callbacks import TagWizardCB
+
+
+def custom_tag_token(tag: str) -> str:
+    """Короткий отпечаток кастомного тега для callback_data.
+
+    Сам тег (до 64 символов, кириллица — по два байта) в лимит callback_data
+    в 64 байта не влезает, а индекс сдвигается после каждого удаления.
+    """
+    return hashlib.sha1(tag.encode("utf-8")).hexdigest()[:10]
 
 
 def tags_preset_page_kb(
@@ -64,8 +74,24 @@ def tags_preset_page_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def tags_custom_kb(*, can_go_back: bool = True) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
+def tags_custom_kb(
+    custom: Sequence[str] = (),
+    *,
+    can_go_back: bool = True,
+) -> InlineKeyboardMarkup:
+    # По кнопке на строку: тег бывает длинной связкой, в две колонки он обрежется.
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text=f"✖ #{tag}",
+                callback_data=TagWizardCB(
+                    action="remove_custom",
+                    value=custom_tag_token(tag),
+                ).pack(),
+            )
+        ]
+        for tag in custom
+    ]
     if can_go_back:
         rows.append([
             InlineKeyboardButton(
