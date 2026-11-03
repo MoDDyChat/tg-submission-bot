@@ -326,6 +326,7 @@ create_async_engine(
 
 - `pool_recycle=600` — reconnects every 10 minutes to avoid PostgreSQL idle-timeout issues
 - `pool_pre_ping=True` — checks the connection before handing it out from the pool
+- `expire_on_commit=False` on the session factory (`db/session.py`) — ORM attributes stay readable after commit, so handlers can use a submission after the write transaction closed
 - `command_timeout=30` — asyncpg stops waiting for a response. Without it, a dropped connection leaves the coroutine hanging forever: PostgreSQL sees the session as `idle in transaction`, and its row lock blocks every writer behind it
 - `statement_timeout` / `idle_in_transaction_session_timeout` — the same safety net from the server side: a hung transaction dies after a minute and releases its locks
 - `lock_timeout=5000` — waiting on someone *else's* row lock is not work, it's a stall: a writer blocked on a lock it doesn't own fails fast after 5s and gives the connection back to the pool instead of burning the full 30s `statement_timeout` sitting idle. Applies only to the main engine — the migration engine (below) isn't bound by it
