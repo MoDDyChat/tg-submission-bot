@@ -1,6 +1,7 @@
 """Entry point: creates Bot, Dispatcher, registers routers, runs polling."""
 
 import asyncio
+from urllib.parse import urlsplit, urlunsplit
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -113,19 +114,28 @@ async def bootstrap_roles() -> None:
     )
 
 
+def _redact_url(url: str) -> str:
+    """Return the URL with its password replaced by *** (safe for logs)."""
+    parts = urlsplit(url)
+    if parts.password is None:
+        return url
+    host = parts.netloc.rsplit("@", 1)[1]
+    return urlunsplit(parts._replace(netloc=f"{parts.username or ''}:***@{host}"))
+
+
 def _create_storage() -> MemoryStorage:
     """Return RedisStorage if REDIS_URL is configured, else MemoryStorage."""
     if config.redis_url:
         try:
             from aiogram.fsm.storage.redis import RedisStorage
             storage = RedisStorage.from_url(config.redis_url)
-            logger.info("FSM storage: Redis (%s)", config.redis_url)
+            logger.info("FSM storage: Redis (%s)", _redact_url(config.redis_url))
             return storage  # type: ignore[return-value]
         except Exception:
             logger.exception(
                 "Не удалось подключиться к Redis FSM storage (%s), "
                 "используем MemoryStorage",
-                config.redis_url,
+                _redact_url(config.redis_url),
             )
     logger.info("FSM storage: Memory (FSM state не переживёт рестарт)")
     return MemoryStorage()
