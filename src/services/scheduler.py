@@ -1,10 +1,12 @@
 """APScheduler wrapper: scheduling, cancellation, and recovery on restart."""
 
 import asyncio
-from datetime import datetime, timezone
+import html
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter, TelegramServerError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -13,6 +15,7 @@ from core.config import config
 from core.exceptions import (
     MSBotError,
     PublicationNotFoundError,
+    PublishFailedError,
     SubmissionCancelledError,
     SubmissionStatusError,
 )
@@ -28,6 +31,16 @@ logger = get_logger(__name__)
 scheduler: AsyncIOScheduler | None = None
 _FORCE_RENDER_INTERVAL = 300  # seconds between schedule-board self-heals
 _last_render_at: float = 0.0  # loop.time()
+# Pauses before re-running a publication that failed on a transient network or
+# Telegram error (~34 min in total). A short outage at the slot time otherwise
+# silently drops the post: the publisher's own retries span only ~10 seconds.
+_PUBLISH_RETRY_DELAYS = (60, 180, 300, 600, 900)
+_TRANSIENT_PUBLISH_ERRORS = (
+    TelegramNetworkError,
+    TelegramServerError,
+    TelegramRetryAfter,
+    asyncio.TimeoutError,
+)
 
 
 def create_scheduler() -> AsyncIOScheduler:
@@ -45,8 +58,9 @@ async def _publish_job(
     edited_caption: str | None,
     bot: Bot,
     session_factory: async_sessionmaker[AsyncSession],
+    attempt: int = 0,
 ) -> None:
-    """Called by APScheduler at the scheduled time."""
+    """Called by APScheduler at the scheduled time (and on its own retries)."""
     logger.info("Выполнение задачи публикации [pub:%d, пост:#%d]", publication_id, submission_id)
     try:
         await publish_post(bot, session_factory, publication_id, submission_id, edited_caption)
@@ -54,9 +68,77 @@ async def _publish_job(
     except (PublicationNotFoundError, SubmissionCancelledError, SubmissionStatusError) as exc:
         logger.info("Задача [pub:%d] пропущена: %s", publication_id, exc)
     except MSBotError as exc:
+        transient = isinstance(exc, PublishFailedError) and isinstance(
+            exc.__cause__, _TRANSIENT_PUBLISH_ERRORS
+        )
+        if transient and attempt < len(_PUBLISH_RETRY_DELAYS):
+            delay = _PUBLISH_RETRY_DELAYS[attempt]
+            logger.warning(
+                "Задача публикации [pub:%d] завершилась с сетевой ошибкой: %s — "
+                "повтор через %dс (повтор %d/%d)",
+                publication_id, exc, delay, attempt + 1, len(_PUBLISH_RETRY_DELAYS),
+            )
+            _schedule_retry(
+                publication_id, submission_id, edited_caption, bot, session_factory,
+                delay, attempt + 1,
+            )
+            return
         logger.error("Задача публикации [pub:%d] завершилась с ошибкой: %s", publication_id, exc)
+        await _notify_publish_failed(bot, session_factory, submission_id, attempt, exc)
     except Exception:
         logger.exception("Неожиданная ошибка в задаче [pub:%d]", publication_id)
+
+
+def _schedule_retry(
+    publication_id: int,
+    submission_id: int,
+    edited_caption: str | None,
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    delay: int,
+    attempt: int,
+) -> None:
+    """Re-run the publication job in ``delay`` seconds under the same job id.
+
+    The same id keeps moderator actions authoritative: a reschedule replaces this
+    retry and an unschedule cancels it. ``publish_at`` in the DB is left as is, so
+    a restart in between recovers the post as overdue and publishes it at once.
+    """
+    if scheduler is None:
+        return
+    scheduler.add_job(
+        _publish_job,
+        trigger="date",
+        run_date=datetime.now(timezone.utc) + timedelta(seconds=delay),
+        args=[publication_id, submission_id, edited_caption, bot, session_factory, attempt],
+        id=_job_id(publication_id),
+        replace_existing=True,
+        misfire_grace_time=3600,
+        coalesce=True,
+    )
+
+
+async def _notify_publish_failed(
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    submission_id: int,
+    retries: int,
+    exc: Exception,
+) -> None:
+    """Tell admins a scheduled post did not go out; best-effort."""
+    try:
+        async with session_factory() as session:
+            await notify_admins(
+                bot, session,
+                actor=None,
+                action_text=msg.ADMIN_NOTIFY_PUBLISH_FAILED.format(
+                    sub_id=submission_id,
+                    attempts=retries + 1,
+                    error=html.escape(str(exc)[:300]),
+                ),
+            )
+    except Exception:
+        logger.warning("Не удалось уведомить админов о сбое публикации #%d", submission_id, exc_info=True)
 
 
 def schedule_post(
@@ -135,7 +217,6 @@ async def recover_scheduled_jobs(
                 "Публикация [pub:%d] пропущена (запланирована %s), перепланируемся через 1с",
                 pub.id, publish_at,
             )
-            from datetime import timedelta
             schedule_post(
                 pub.id, now + timedelta(seconds=1), bot, session_factory,
                 submission_id=pub.submission_id,

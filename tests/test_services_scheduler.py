@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from aiogram.exceptions import TelegramNetworkError
 
 from core.exceptions import (
     PublicationNotFoundError,
@@ -74,13 +75,72 @@ async def test_publish_job_skips_known_domain_errors(monkeypatch, caplog, exc) -
     assert "пропущена" in caplog.text
 
 
-async def test_publish_job_logs_msbot_errors(monkeypatch, caplog) -> None:
+def _network_failure() -> PublishFailedError:
+    """PublishFailedError chained to a transient error, as publisher.py raises it."""
+    exc = PublishFailedError("Connection reset by peer")
+    exc.__cause__ = TelegramNetworkError(method=Mock(), message="Connection reset by peer")
+    return exc
+
+
+async def test_publish_job_logs_msbot_errors(monkeypatch, caplog, mock_scheduler) -> None:
     monkeypatch.setattr(scheduler, "publish_post", AsyncMock(side_effect=PublishFailedError("boom")))
+    notify_admins_mock = AsyncMock()
+    monkeypatch.setattr(scheduler, "notify_admins", notify_admins_mock)
 
     with caplog.at_level("ERROR"):
         await scheduler._publish_job(1, 2, "caption", make_bot(), FakeSessionFactory(AsyncMock()))
 
     assert "завершилась с ошибкой" in caplog.text
+    # A non-transient failure is not retried, admins are told at once.
+    mock_scheduler.add_job.assert_not_called()
+    notify_admins_mock.assert_awaited_once()
+    assert "#2" in notify_admins_mock.call_args.kwargs["action_text"]
+
+
+async def test_publish_job_retries_transient_failure(monkeypatch, mock_scheduler) -> None:
+    monkeypatch.setattr(scheduler, "publish_post", AsyncMock(side_effect=_network_failure()))
+    notify_admins_mock = AsyncMock()
+    monkeypatch.setattr(scheduler, "notify_admins", notify_admins_mock)
+    before = datetime.now(timezone.utc)
+
+    await scheduler._publish_job(1, 2, "caption", make_bot(), FakeSessionFactory(AsyncMock()))
+
+    mock_scheduler.add_job.assert_called_once()
+    kwargs = mock_scheduler.add_job.call_args.kwargs
+    assert kwargs["id"] == "pub_1"
+    assert kwargs["replace_existing"] is True
+    assert kwargs["args"][0:3] == [1, 2, "caption"]
+    assert kwargs["args"][-1] == 1
+    delay = (kwargs["run_date"] - before).total_seconds()
+    assert scheduler._PUBLISH_RETRY_DELAYS[0] <= delay < scheduler._PUBLISH_RETRY_DELAYS[0] + 5
+    notify_admins_mock.assert_not_awaited()
+
+
+async def test_publish_job_notifies_admins_after_last_retry(monkeypatch, mock_scheduler) -> None:
+    monkeypatch.setattr(scheduler, "publish_post", AsyncMock(side_effect=_network_failure()))
+    notify_admins_mock = AsyncMock()
+    monkeypatch.setattr(scheduler, "notify_admins", notify_admins_mock)
+    last = len(scheduler._PUBLISH_RETRY_DELAYS)
+
+    await scheduler._publish_job(
+        1, 2, "caption", make_bot(), FakeSessionFactory(AsyncMock()), attempt=last,
+    )
+
+    mock_scheduler.add_job.assert_not_called()
+    notify_admins_mock.assert_awaited_once()
+    text = notify_admins_mock.call_args.kwargs["action_text"]
+    assert "#2" in text
+    assert f"({last + 1})" in text
+
+
+async def test_publish_job_survives_failed_admin_notification(monkeypatch, caplog, mock_scheduler) -> None:
+    monkeypatch.setattr(scheduler, "publish_post", AsyncMock(side_effect=PublishFailedError("boom")))
+    monkeypatch.setattr(scheduler, "notify_admins", AsyncMock(side_effect=RuntimeError("db down")))
+
+    with caplog.at_level("WARNING"):
+        await scheduler._publish_job(1, 2, "caption", make_bot(), FakeSessionFactory(AsyncMock()))
+
+    assert "Не удалось уведомить админов" in caplog.text
 
 
 async def test_recover_scheduled_jobs_restores_future_and_immediate_publications(monkeypatch) -> None:

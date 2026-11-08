@@ -322,6 +322,7 @@ _DEFAULTS: dict[str, str | dict[str, str]] = {
     'SCHEDULE_DEAD_LINE': '<b>{date} {time}</b> · {author} (#{sub_id}) → {link}',
     'ADMIN_NOTIFY_DEAD_PUBLICATIONS': '⛔️ При старте найдено просроченных публикаций: <b>{count}</b>. Они просрочены более чем на 24 часа и не были поставлены в расписание — сами не выйдут.\n\n{items}\n\nПерепланируйте или отклоните их вручную.',
     'ADMIN_NOTIFY_DEAD_PUBLICATION_ITEM': '• пост #{sub_id} — было запланировано на {when}',
+    'ADMIN_NOTIFY_PUBLISH_FAILED': '⛔️ Пост #{sub_id} не опубликован по расписанию: все попытки ({attempts}) не удались.\n\nОшибка: {error}\n\nПерепланируйте его вручную или опубликуйте сейчас.',
     # ── Direct channel ────────────────────────────────────────────────
     'MODERATOR_DIRECT_MESSAGE_TO_VIEWER': '✉️ <b>Сообщение от модерации</b>\n\n{text}\n\n<i>Ответьте на это сообщение (reply), чтобы написать модераторам.</i>',
     'DIRECT_REPLY_SENT': 'Ответ отправлен модераторам.',

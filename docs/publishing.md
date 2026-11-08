@@ -80,7 +80,7 @@
 | `SubmissionCancelledError` | `publisher.py` | `scheduler.py` |
 | `SubmissionStatusError` | `publisher.py` | `scheduler.py` |
 | `PublicationNotFoundError` | `publisher.py` | `scheduler.py` |
-| `PublishFailedError` | `publisher.py` | `scheduler.py` |
+| `PublishFailedError` | `publisher.py` | `scheduler.py` (retried if transient, then admin DM) |
 | `PublishStateUnknownError` | `publisher.py` | `scheduler.py`, `publish_now.py` |
 | `UserNotReachableError` | — | — |
 
@@ -91,6 +91,8 @@ Handlers don't raise domain exceptions — they handle situations inline and res
 ## Error handling
 
 - **Retry in publisher:** up to 3 attempts on `TelegramRetryAfter` (waits `retry_after`) and `TelegramNetworkError` (waits 5 sec); this also covers Telegram flood control
+- **Retry in scheduler:** if `publish_post` raises `PublishFailedError` chained to a transient error (`TelegramNetworkError`, `TelegramServerError`, `TelegramRetryAfter`, `asyncio.TimeoutError`), `_publish_job` re-adds the job under the same id `pub_<id>` after 1, 3, 5, 10 and 15 min (`_PUBLISH_RETRY_DELAYS`). The same id lets a moderator's reschedule replace the retry and an unschedule cancel it; `publish_at` in the DB is not touched, so a restart in between recovers the post as overdue and publishes it immediately
+- **Failed publication alert:** when the retries run out, or on any other `MSBotError` except the skip cases, admins get a DM `ADMIN_NOTIFY_PUBLISH_FAILED` (best-effort). Before this a failed slot was only logged
 - **Viewer blocked the bot:** caught during notification (`publisher.py`), logged as a warning
 - **Viewer cancelled the post during moderation:** status is checked at every FSM step; terminal statuses: `cancelled`, `published`, `rejected`
 - **Bot restart:** all scheduled jobs are restored from publications; FSM state is lost with MemoryStorage (preserved with RedisStorage — `REDIS_URL`); "Close" works correctly via `callback.message.delete()`
